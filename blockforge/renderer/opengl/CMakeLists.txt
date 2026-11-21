@@ -10,7 +10,7 @@ target_sources(opengl PRIVATE
 # Include directories
 target_include_directories(opengl PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/renderer>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/opengl>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/renderer/opengl>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/core>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/renderer/meshing>
 )

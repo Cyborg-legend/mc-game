@@ -1,9 +1,8 @@
 add_library(shaders STATIC)
 
-# Shader files - will be copied or embedded
-set(SHADER_SOURCES
-    shader.opvs
-    shader.frag
-)
+# OpenGL shaders - vertex and fragment for the OpenGL renderer
+# These are embedded as source strings in the code, not separate files
+set(SHADER_SOURCES STATIC)
 
-# Add custom command to handle shaders
+# The shaders are included via #include in the renderer code
+# No separate file processing needed for OpenGL
