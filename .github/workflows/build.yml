@@ -19,8 +19,17 @@ jobs:
           Expand-Archive glfw.zip -DestinationPath .
           $glfwDir = (Get-ChildItem -Directory glfw-* | Select-Object -First 1).FullName
           Copy-Item "$glfwDir" "glfw_deps" -Recurse -Force
-          Write-Host "GLFW contents:"
-          Get-ChildItem -Recurse glfw_deps | Select-Object FullName
+          $libFile = Get-ChildItem -Path "glfw_deps" -Recurse -Filter "glfw3.lib" | Where-Object { $_.FullName -notmatch "mingw" } | Select-Object -First 1
+          $includeDir = Join-Path "glfw_deps" "include"
+          $config = @"
+          set(glfw3_FOUND TRUE)
+          set(glfw3_INCLUDE_DIRS "$includeDir")
+          set(glfw3_LIBRARIES "$($libFile.FullName)")
+          set(glfw3_LIBRARY "$($libFile.FullName)")
+          "@
+          Set-Content -Path "glfw_deps/glfw3Config.cmake" -Value $config
+          Write-Host "GLFW lib: $($libFile.FullName)"
+          Write-Host "GLFW include: $includeDir"
         shell: pwsh
 
       - name: Download GLM
