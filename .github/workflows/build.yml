@@ -1,0 +1,28 @@
+name: Build BlockForge
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Build
+        run: |
+          cmake -B build -DBLOCKFORGE_VULKAN_RENDERER=OFF
+          cmake --build build --config Release
+        shell: pwsh
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockforge-windows
+          path: |
+            build/Release/blockforge.exe
+            build/Release/*.dll   
