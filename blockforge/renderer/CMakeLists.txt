@@ -1,27 +1,16 @@
-add_library(renderer STATIC)
-
-# Include parent dirs
-target_include_directories(renderer PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/renderer>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/core>
-    $<BUILD_INTERFACE:${Vulkan_INCLUDE_DIRS}>
-    $<BUILD_INTERFACE:${GLFW_INCLUDE_DIRS}>
+add_library(renderer STATIC
+    meshing/greedy_mesher.cpp
 )
 
-# Conditionally include renderer modules based on selection
+target_include_directories(renderer PUBLIC
+    ${CMAKE_SOURCE_DIR}/renderer
+    ${CMAKE_SOURCE_DIR}/core
+    ${CMAKE_SOURCE_DIR}/platform/common
+    ${CMAKE_SOURCE_DIR}
+)
+
 if(BLOCKFORGE_VULKAN_RENDERER)
-    # Vulkan module
-    add_subdirectory(vulkan)
-    
-    # Shaders module (Vulkan-specific)
-    add_subdirectory(shaders)
-    
-    # Meshing module (shared)
-    add_subdirectory(meshing)
-else
-    # OpenGL module
-    add_subdirectory(opengl)
-    
-    # Meshing module (shared - used by both renderers)
-    add_subdirectory(meshing)
-endif
+  add_subdirectory(vulkan)
+endif()
+
+add_subdirectory(opengl)   
