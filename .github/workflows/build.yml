@@ -15,7 +15,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -DBLOCKFORGE_VULKAN_RENDERER=OFF
+          cmake -B build -S blockforge -DBLOCKFORGE_VULKAN_RENDERER=OFF
           cmake --build build --config Release
         shell: pwsh
 
