@@ -18,11 +18,9 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip" -OutFile "glfw.zip"
           Expand-Archive glfw.zip -DestinationPath .
           $glfwDir = (Get-ChildItem -Directory glfw-* | Select-Object -First 1).FullName
-          New-Item -ItemType Directory -Force -Path "glfw_deps/include" | Out-Null
-          New-Item -ItemType Directory -Force -Path "glfw_deps/lib" | Out-Null
-          Copy-Item "$glfwDir/include/*" "glfw_deps/include/" -Recurse -Force
-          Copy-Item "$glfwDir/lib-vc2022/*" "glfw_deps/lib/" -Recurse -Force
-          Copy-Item "$glfwDir/bin/*" "glfw_deps/lib/" -Recurse -Force
+          Copy-Item "$glfwDir" "glfw_deps" -Recurse -Force
+          Write-Host "GLFW contents:"
+          Get-ChildItem -Recurse glfw_deps | Select-Object FullName
         shell: pwsh
 
       - name: Download GLM
