@@ -13,13 +13,51 @@ jobs:
       - name: Install CMake
         uses: lukka/get-cmake@latest
 
+      - name: Install GLFW
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.w64.zip" -OutFile "glfw.zip"
+          Expand-Archive glfw.zip -DestinationPath .
+          $glfwDir = (Get-ChildItem -Directory glfw-* | Select-Object -First 1).FullName
+          Copy-Item "$glfwDir/include/*" "$env:GITHUB_WORKSPACE/glfw/include/" -Recurse -Force
+          Copy-Item "$glfwDir/lib-vc2022/*" "$env:GITHUB_WORKSPACE/glfw/lib/" -Recurse -Force
+          Copy-Item "$glfwDir/bin/*" "$env:GITHUB_WORKSPACE/glfw/bin/" -Recurse -Force
+        shell: pwsh
+
+      - name: Download GLM
+        run: |
+          New-Item -ItemType Directory -Force -Path "glm"
+          Invoke-WebRequest -Uri "https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz" -OutFile "glm.tar.gz"
+          tar -xzf glm.tar.gz
+          Copy-Item -Recurse "glm-1.0.1/glm" "$env:GITHUB_WORKSPACE/glm/glm"
+        shell: pwsh
+
+      - name: Download nlohmann/json
+        run: |
+          New-Item -ItemType Directory -Force -Path "nlohmann"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp" -OutFile "nlohmann/json.hpp"
+        shell: pwsh
+
+      - name: Download miniaudio
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h" -OutFile "miniaudio.h"
+          Copy-Item miniaudio.h "$env:GITHUB_WORKSPACE/blockforge/miniaudio.h"
+        shell: pwsh
+
+      - name: Download stb_image
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h" -OutFile "stb_image.h"
+          Copy-Item stb_image.h "$env:GITHUB_WORKSPACE/blockforge/stb_image.h"
+        shell: pwsh
+
       - name: Build
         run: |
-          cmake -B build -S blockforge -DBLOCKFORGE_VULKAN_RENDERER=OFF
-          cmake --build build --config Release
+          $env:CMAKE_PREFIX_PATH = "$env:GITHUB_WORKSPACE/glfw;$env:CMAKE_PREFIX_PATH"
+          cmake -B build -S blockforge -DBLOCKFORGE_VULKAN_RENDERER=OFF -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/glfw;$env:GITHUB_WORKSPACE"
+          cmake --build build --config Release 2>&1
         shell: pwsh
 
       - name: Upload build
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: blockforge-windows
