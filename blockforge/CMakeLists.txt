@@ -10,7 +10,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Choose renderer: Vulkan or OpenGL
 option(BLOCKFORGE_VULKAN_RENDERER "Use Vulkan renderer (default: OFF for OpenGL)" OFF)
 
-find_package(Vulkan REQUIRED)
+if(BLOCKFORGE_VULKAN_RENDERER)
+  find_package(Vulkan REQUIRED)
+endif()
 find_package(glfw3 REQUIRED)
 
 # External dependencies (header-only)
