@@ -20,15 +20,16 @@ jobs:
           $glfwDir = (Get-ChildItem -Directory glfw-* | Select-Object -First 1).FullName
           Copy-Item "$glfwDir" "glfw_deps" -Recurse -Force
           $libFile = Get-ChildItem -Path "glfw_deps" -Recurse -Filter "glfw3.lib" | Where-Object { $_.FullName -notmatch "mingw" } | Select-Object -First 1
-          $includeDir = Join-Path "glfw_deps" "include"
+          $includeDir = (Join-Path "glfw_deps" "include").Replace('\','/')
+          $libPath = $libFile.FullName.Replace('\','/')
           $config = @"
           set(glfw3_FOUND TRUE)
           set(glfw3_INCLUDE_DIRS "$includeDir")
-          set(glfw3_LIBRARIES "$($libFile.FullName)")
-          set(glfw3_LIBRARY "$($libFile.FullName)")
+          set(glfw3_LIBRARIES "$libPath")
+          set(glfw3_LIBRARY "$libPath")
           "@
           Set-Content -Path "glfw_deps/glfw3Config.cmake" -Value $config
-          Write-Host "GLFW lib: $($libFile.FullName)"
+          Write-Host "GLFW lib: $libPath"
           Write-Host "GLFW include: $includeDir"
         shell: pwsh
 
