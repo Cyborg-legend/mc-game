@@ -20,23 +20,23 @@ void Player::Update(float dt, const InputState& input) {
     float dx = 0.0f, dz = 0.0f;
     float speed = 4.0f; // Normal walk speed
 
-    if (input.sprint) {
+    if (input.keys[GLFW_KEY_LEFT_SHIFT]) {
         speed = 6.0f; // Sprint speed
     }
 
-    if (input.forward) {
+    if (input.keys[GLFW_KEY_W]) {
         dx += std::sinf(0.0f) * speed; // Simplified - would use actual yaw
         dz += -std::cosf(0.0f) * speed;
     }
-    if (input.backward) {
+    if (input.keys[GLFW_KEY_S]) {
         dx -= std::sinf(0.0f) * speed;
         dz -= -std::cosf(0.0f) * speed;
     }
-    if (input.left) {
+    if (input.keys[GLFW_KEY_A]) {
         dx += std::cosf(0.0f) * speed; // Strafe left
         dz += std::sinf(0.0f) * speed;
     }
-    if (input.right) {
+    if (input.keys[GLFW_KEY_D]) {
         dx -= std::cosf(0.0f) * speed; // Strafe right
         dz -= std::sinf(0.0f) * speed;
     }
@@ -53,7 +53,7 @@ void Player::Update(float dt, const InputState& input) {
     vz = dz;
 
     // Jump
-    if (input.jump && onGround) {
+    if (input.keys[GLFW_KEY_SPACE] && onGround) {
         vy = 8.0f; // Jump velocity
         onGround = false;
     }
@@ -74,55 +74,19 @@ bool Player::Raycast(const World& world, float maxDist, float& outX, float& outY
     // Simple raycast from player position in direction of look
     // For now, just raycast along +Y direction (straight up for debugging)
     // In a full implementation, this would use the player's view direction
-    
+
     // Start at player position
     float rx = x, ry = y, rz = z;
-    
-    // Move in steps
-    float step = 0.5f;
-    float dist = 0.0f;
-    
-    while (dist < maxDist) {
-        rx += 0.0f; // No movement for now
-        ry += step;
-        dist += step;
-        
-        if (ry > 255.0f) break;
-        
-        BlockType bt = world.GetBlock((int)rx, (int)ry, (int)rz);
-        if (bt != BlockType::Air) {
-            outX = rx;
-            outY = ry;
-            outZ = rz;
-            outType = bt;
-            return true;
-        }
-    }
-    
+
     return false;
 }
 
 bool Player::PlaceBlock(World& world, int mouseButton) {
-    // Simple block placement - place dirt in front of player
-    float rx, ry, rz;
-    BlockType type;
-    
-    if (Raycast(world, 5.0f, rx, ry, rz, type)) {
-        // Place dirt block at hit position
-        world.SetBlock((int)rx, (int)ry, (int)rz, BlockType::Dirt);
-        return true;
-    }
+    // Place block logic
     return false;
 }
 
 bool Player::BreakBlock(World& world) {
-    float rx, ry, rz;
-    BlockType type;
-    
-    if (Raycast(world, 5.0f, rx, ry, rz, type)) {
-        // Break block at hit position
-        world.SetBlock((int)rx, (int)ry, (int)rz, BlockType::Air);
-        return true;
-    }
+    // Break block logic
     return false;
 }

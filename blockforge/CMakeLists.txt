@@ -26,7 +26,7 @@ target_include_directories(blockforge_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/platform/windows
     ${CMAKE_SOURCE_DIR}/platform/linux
     ${CMAKE_SOURCE_DIR}/audio
-    ${CMAKE_SOURCE_DIR}/glm_deps
+    ${CMAKE_SOURCE_DIR}/..    # For nlohmann/json and glm_deps (parent of blockforge)
     ${CMAKE_SOURCE_DIR}/glew_deps/include
     ${CMAKE_SOURCE_DIR}/nlohmann
     ${CMAKE_SOURCE_DIR}/glfw_deps/include

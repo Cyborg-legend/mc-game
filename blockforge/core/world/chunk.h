@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <unordered_map>
 
 // BlockType enum matching spec: Air, Stone, Dirt, Grass, Wood, Leaves, Sand, Water, Bedrock, Planks, Sticks, CraftingTable, Brick (14 types)
 enum class BlockType : uint8_t {
@@ -80,15 +82,12 @@ public:
     void GenerateChunk(int cx, int cz);
 
     // Get all chunks (for iteration)
-    const std::array<Chunk, 4096>& GetChunks() const { return m_chunks; }
-    std::array<Chunk, 4096>& GetChunks() { return m_chunks; }
-
-    // Get chunk count (fixed pool of 4096)
-    size_t GetChunkCount() const { return 4096; }
+    size_t GetChunkCount() const;
 
 private:
-    // Fixed pool of 4096 chunks
-    std::array<Chunk, 4096> m_chunks{};
+    // Use unordered_map instead of std::array to avoid 16MB stack allocation
+    // Only stores chunks that are actually used
+    std::unordered_map<uint64_t, Chunk> m_chunks;
 
     // Simple 2D value noise
     float ValueNoise(float x, float z) const;
