@@ -1,211 +1,130 @@
 #include "mob.h"
-#include "core/ecs/position.h"
-#include "core/ecs/velocity.h"
-#include "core/world/world.h"
-#include <glm/glm.hpp>
+#include "world/chunk.h"
 #include <cmath>
+#include <random>
 
-void MobAI::Update(float deltaTime, World& world, int playerEntityId) {
-    timer += deltaTime;
+static std::mt19937 rng(std::random_device{}());
 
-    // Update burn timer if applicable
-    if (type == MobType::Zombie && state != MobState::Burn) {
-        burnTimer -= static_cast<int>(deltaTime * 20.0f); // 20Hz
-        if (burnTimer <= 0) {
-            // Check if in daylight - burn
-            // For now, just transition to Burn state if timer expires
-            state = MobState::Burn;
-        }
-    }
+Mob::Mob() : x(0.0f), y(0.0f), z(0.0f), vx(0.0f), vy(0.0f), vz(0.0f),
+    type(MobType::None), state(MobState::Idle), timer(0.0f),
+    wanderTimer(0.0f), wanderRadius(10.0f), homeChunk{0, 0} {}
 
-    // Decide state transitions
-    DecideState(deltaTime, world, playerEntityId);
+void Mob::Update(float dt, const World& world) {
+    // Update timers
+    timer += dt;
+    wanderTimer += dt;
 
-    // Execute state-based movement
+    // State machine
     switch (state) {
         case MobState::Idle:
-            // No movement, just timer-based transition
-            if (timer > 3.0f) {
+            // Transition to wander after a short time
+            if (timer > 2.0f) {
                 state = MobState::Wander;
                 timer = 0.0f;
             }
             break;
+
         case MobState::Wander:
             // Wander randomly
-            // Simple: pick a random direction after some time
-            timer -= deltaTime;
-            if (timer <= 0.0f) {
-                // Transition back to idle after wandering
+            if (wanderTimer > 1.5f) {
+                // Change direction every 1.5 seconds
+                wanderTimer = 0.0f;
+                // Random direction
+                float angle = static_cast<float>(rng()) / static_cast<float>(rng.max()) * 3.14159f * 2.0f;
+                vx = std::cosf(angle) * 2.0f;
+                vz = std::sinf(angle) * 2.0f;
+            }
+
+            // Update position
+            x += vx * dt;
+            z += vz * dt;
+
+            // Check if player is close enough to chase
+            // Simplified: check if player is within 16 blocks
+            // In a full implementation, would check actual player position
+            // if (DistanceToPlayer < 16.0f) state = MobState::Chase;
+
+            // Randomly transition back to idle
+            if (rng() % 100 < 1) { // 1% chance per frame
                 state = MobState::Idle;
                 timer = 0.0f;
             }
             break;
+
         case MobState::Chase:
-            // Move toward player
-            MoveTowardTarget(deltaTime, world);
-            break;
-        case MobState::Attack:
-            // Simple: just move toward target
-            // Actual attack logic would be separate
-            MoveTowardTarget(deltaTime, world);
-            break;
-        case MobState::Flee:
-            // Flee from player
-            // Would implement flee logic here
-            break;
-        case MobState::Burn:
-            // Take damage over time while burning
-            // Eventually despawn or die
-            burnTimer -= static_cast<int>(deltaTime * 20.0f);
-            if (burnTimer <= 0) {
-                // Die from burning
-                // For now, just transition back
-                state = MobState::Idle;
+            // Chase the player
+            // In a full implementation, would calculate direction to player
+            // For now, just continue wandering with faster speed
+            vx *= 1.5f;
+            vz *= 1.5f;
+
+            x += vx * dt;
+            z += vz * dt;
+
+            // Lose player if too far
+            if (timer > 10.0f) {
+                state = MobState::Wander;
+                timer = 0.0f;
+                wanderTimer = 0.0f;
             }
             break;
-        default:
+
+        case MobState::Attack:
+            // Attack player
+            // Reduce player health
+            // timer -= dt;
+            // if (timer <= 0.0f) state = MobState::Wander;
             break;
-    }
-}
 
-void MobAI::DecideState(float deltaTime, World& world, int playerEntityId) {
-    // Check player distance
-    float dist = DistanceToTarget(world, playerEntityId);
+        case MobState::Flee:
+            // Flee from player or danger
+            // Move away from player
+            // vx and vz would be negated from player direction
+            // After some time, return to wander
+            if (timer > 3.0f) {
+                state = MobState::Wander;
+                timer = 0.0f;
+                wanderTimer = 0.0f;
+            }
+            break;
 
-    // State machine logic
-    switch (state) {
-        case MobState::Idle:
-            // If player is close, start chasing
-            if (dist > 0 && dist < 16.0f) {
-                // Check if it's night for zombies, or any time for wolves
-                // For all mobs, chase player when within range
-                state = MobState::Chase;
+        case MobState::Burn:
+            // Burn in daylight
+            // Take damage over time
+            // if (timer > 10.0f) // mob dies
+            //     state = MobState::Idle;
+            timer -= dt;
+            if (timer <= 0.0f) {
+                state = MobState::Idle;
                 timer = 0.0f;
             }
-            // If player is very close, attack
-            else if (dist > 0 && dist < 4.0f) {
-                state = MobState::Attack;
-            }
             break;
+    }
 
-        case MobState::Wander:
-            // If player comes within range, chase
-            if (dist > 0 && dist < 16.0f) {
-                state = MobState::Chase;
-            }
-            // After wandering for a while, go idle
-            timer -= deltaTime;
-            if (timer <= 0.0f) {
-                state = MobState::Idle;
-            }
-            break;
-
-        case MobState::Chase:
-            // Continue chasing while player is within range
-            if (dist > 32.0f) {
-                // Player too far, go idle
-                state = MobState::Idle;
-            } else if (dist < 4.0f) {
-                // Get close enough to attack
-                state = MobState::Attack;
-            }
-            // If it's daytime and zombie, start burning
-            if (type == MobType::Zombie && dist > 0) {
-                // Simplified: just start burn timer
-                burnTimer = 600; // 60 seconds at 20Hz = 3 minutes max
-                state = MobState::Burn;
-            }
-            break;
-
-        case MobState::Attack:
-            // If player moves away, resume chase
-            if (dist > 8.0f) {
-                state = MobState::Chase;
-            }
-            // After attacking for a while, go idle
-            timer -= deltaTime;
-            if (timer <= 0.0f) {
-                state = MobState::Idle;
-            }
-            break;
-
-        case MobState::Flee:
-            // If player is far enough, stop fleeing
-            if (dist > 20.0f) {
-                state = MobState::Idle;
-            }
-            break;
-
-        case MobState::Burn:
-            // If night time, stop burning
-            // (In a full implementation, check actual time of day)
-            // For now, just reduce burn timer
-            burnTimer -= static_cast<int>(deltaTime * 20.0f);
-            if (burnTimer <= 0) {
-                state = MobState::Idle;
-            }
-            break;
+    // Ground check and gravity
+    if (y > 0.0f) {
+        y += vy * dt;
+    }
+    if (!onGround) {
+        vy -= 20.0f * dt; // Gravity
     }
 }
 
-glm::vec3 MobAI::MoveTowardTarget(float deltaTime, const World& world) {
-    // Get current position
-    float mx, mz;
-    // Need access to position - this is simplified
-    // In full implementation, would query world position component
-    // For now, return zero movement
-    (void)world;
-    (void)deltaTime;
-    return glm::vec3(0.0f);
-}
+void Mob::Move(float dt, World& world) {
+    // Apply movement
+    x += vx * dt;
+    z += vz * dt;
 
-float MobAI::DistanceToTarget(const World& world, int playerEntityId) const {
-    // Placeholder: return distance to player
-    // Full implementation would get player position and compute distance
-    return 0.0f;
-}
-
-// ============================================================
-// Mob spawning and despawn logic
-// ============================================================
-
-// Spawn mobs: 1 mob per 4x4 chunk area, max 200 total, within 32 chunks of player
-void SpawnMobs(World& world, int playerChunkX, int playerChunkZ, int& totalMobs) {
-    // Count existing mobs
-    // In a full implementation, would iterate over entities with MobType
-
-    // Calculate spawn area: ±2 chunks around player (8x8 chunk area = 128x128 blocks)
-    int spawnRadius = 8; // chunks
-
-    // Try to spawn up to 5 mobs per call
-    int toSpawn = 5;
-    while (toSpawn > 0 && totalMobs < 200) {
-        // Pick random location within spawn radius
-        int cx = playerChunkX + (rand() % (spawnRadius * 2)) - spawnRadius;
-        int cz = playerChunkZ + (rand() % (spawnRadius * 2)) - spawnRadius;
-        int cy = 0; // Ground level
-
-        // Check if chunk already has mobs (simplified - just check if position is valid)
-        // Get or create chunk
-        Chunk& chunk = world.GetOrCreateChunk(cx, cy / 16, cz);
-
-        // Check if the spot is valid (ground, not already packed with mobs)
-        // Simplified: just check if there's air at the spawn position
-        BlockType type = chunk.GetBlock(8, 0, 8); // Check center of chunk
-        if (type == BlockType::Air || type == BlockType::Dirt) {
-            // Spawn mob - just mark an entity as having MobAI
-            // In full implementation, would create an entity with MobAI component
-            totalMobs--;
-            // Don't actually spawn here in this simplified version
-        }
-
-        toSpawn--;
+    // Simple ground check
+    if (y <= 0.0f) {
+        y = 0.0f;
+        vy = 0.0f;
     }
 }
 
-// Despawn: beyond 48 chunks
-void CheckDespawn(World& world, int playerChunkX, int playerChunkZ) {
-    // In a full implementation, would iterate over mob entities
-    // and check distance from player
-    // For now, just a placeholder
+bool Mob::ShouldDespawn(float playerDistSq) const {
+    // Despawn beyond 48 chunks
+    // 1 chunk = 16 blocks, so 48 * 16 = 768 blocks
+    const float despawnDistSq = 768.0f * 768.0f;
+    return playerDistSq > despawnDistSq;
 }

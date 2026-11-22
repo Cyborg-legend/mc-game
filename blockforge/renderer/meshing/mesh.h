@@ -1,16 +1,14 @@
 #pragma once
 
-#include "core/world/chunk.h"
 #include <cstdint>
-#include <array>
 #include <vector>
 
-// Vertex format for meshing: position, normal, uv, ao
+// Vertex format: position, normal, uv, ao
 struct Vertex {
-    float pos[3];   // 3 floats for position
-    float normal[3]; // 3 floats for normal
-    float uv[2];     // 2 floats for UV
-    float ao;        // 1 float for ambient occlusion
+    float pos[3];     // 3 floats for position
+    float normal[3];  // 3 floats for normal
+    float uv[2];      // 2 floats for UV
+    float ao;         // 1 float for ambient occlusion
 };
 
 // MeshChunk result from greedy meshing
@@ -22,5 +20,10 @@ struct MeshChunk {
 };
 
 // Face normal directions for 6 faces of a cube
+// Order: +X, -X, +Y, -Y, +Z, -Z
 extern const std::array<std::array<float, 3>, 6> faceNormals;
-extern const std::array<std::array<float, 2>, 4> faceUvCoords[6];
+
+// Face UV coordinate mappings for each of the 6 faces
+// Each face has 4 UV coords corresponding to the quad vertices
+// UV layout maps a single block face to a 16x16 tile in a 256x256 texture atlas
+extern const std::array<std::array<float, 4>, 6> faceUvCoords[6];

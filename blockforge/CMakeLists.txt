@@ -2,46 +2,44 @@ cmake_minimum_required(VERSION 3.18)
 project(BlockForge CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# C++17 features
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Choose renderer: Vulkan or OpenGL
-option(BLOCKFORGE_VULKAN_RENDERER "Use Vulkan renderer" OFF)
-
-# Find Vulkan only if we might use it - make optional
-if(BLOCKFORGE_VULKAN_RENDERER)
-    find_package(Vulkan REQUIRED)
-endif()
 
 find_package(glfw3 REQUIRED)
 
-# External dependencies (header-only)
-# nlohmann/json, stb_image, miniaudio are header-only
+file(GLOB_RECURSE ALL_SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+list(FILTER ALL_SOURCES EXCLUDE "main\\.cpp$")
 
-add_subdirectory(core)
-add_subdirectory(renderer)
-add_subdirectory(platform)
-add_subdirectory(audio)
+add_library(blockforge_lib STATIC ${ALL_SOURCES})
 
-# assets subdirectory - skip if empty
-if(NOT EXISTS "${CMAKE_SOURCE_DIR}/blockforge/assets/CMakeLists.txt")
-    # Skip assets if no CMakeLists
-endif()
-
-add_executable(blockforge main.cpp)
-target_link_libraries(blockforge PRIVATE
-    core
-    renderer
-    platform
+target_include_directories(blockforge_lib PUBLIC
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/core
+    ${CMAKE_SOURCE_DIR}/core/ecs
+    ${CMAKE_SOURCE_DIR}/core/world
+    ${CMAKE_SOURCE_DIR}/core/physics
+    ${CMAKE_SOURCE_DIR}/core/entities
+    ${CMAKE_SOURCE_DIR}/core/crafting
+    ${CMAKE_SOURCE_DIR}/core/save
+    ${CMAKE_SOURCE_DIR}/renderer
+    ${CMAKE_SOURCE_DIR}/renderer/meshing
+    ${CMAKE_SOURCE_DIR}/renderer/opengl
+    ${CMAKE_SOURCE_DIR}/platform/common
+    ${CMAKE_SOURCE_DIR}/platform/windows
+    ${CMAKE_SOURCE_DIR}/platform/linux
+    ${CMAKE_SOURCE_DIR}/audio
+    ${CMAKE_SOURCE_DIR}/glm_deps
+    ${CMAKE_SOURCE_DIR}/glew_deps/include
+    ${CMAKE_SOURCE_DIR}/nlohmann
+    ${CMAKE_SOURCE_DIR}/glfw_deps/include
 )
 
-# Include GLFW headers globally
-target_include_directories(blockforge PUBLIC
-    $<BUILD_INTERFACE:${GLFW_INCLUDE_DIRS}>)
+target_link_libraries(blockforge_lib PUBLIC
+    glfw3
+    glew32
+    opengl32
+    gdi32
+    user32
+)
 
-# Conditionally link Vulkan only when using Vulkan renderer
-if(BLOCKFORGE_VULKAN_RENDERER)
-    target_link_libraries(blockforge PRIVATE vulkan)
-endif()
+add_executable(blockforge main.cpp)
+target_link_libraries(blockforge PRIVATE blockforge_lib)

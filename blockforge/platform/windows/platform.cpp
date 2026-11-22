@@ -1,97 +1,135 @@
-#include "iplatform.h"
-#include <GLFW/glfw3.h>
-#include <fstream>
+#include "platform/windows/platform.h"
+#include "platform/common/iplatform.h"
+#include <GL/glew.h>
 #include <iostream>
-#include <string>
+#include <cstring>
+#include <fstream>
+#include <filesystem>
 
-namespace platform::windows {
+namespace fs = std::filesystem;
 
-bool Platform::InitWindow(const char* title, int width, int height) {
-    (void)width;
-    (void)height;
+WindowsPlatform::WindowsPlatform() = default;
+WindowsPlatform::~WindowsPlatform() = default;
 
-    // GLFW will create the window; we just need to initialize it if not already
+bool WindowsPlatform::InitWindow(uint32_t width, uint32_t height, const char* title) {
     if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW" << std::endl;
+        std::cerr << "Failed to initialize GLFW!" << std::endl;
         return false;
     }
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    glfwWindow_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    if (!glfwWindow_) {
-        std::cerr << "Failed to create GLFW window" << std::endl;
+    #ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    #endif
+
+    m_window = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    if (!m_window) {
+        std::cerr << "Failed to create GLFW window!" << std::endl;
         glfwTerminate();
         return false;
     }
 
-    // Set user pointer for event handling
-    glfwSetWindowUserPointer(glfwWindow_, this);
+    glfwMakeContextCurrent(m_window);
+    
+    // Initialize GLEW
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) {
+        std::cerr << "Failed to initialize GLEW!" << std::endl;
+        return false;
+    }
 
-    // Window close callback
-    glfwSetWindowCloseCallback(glfwWindow_, [](GLFWwindow* window) {
-        auto* self = static_cast<Platform*>(glfwGetWindowUserPointer(window));
-        if (self) self->quit_ = true;
-    });
+    glfwSetWindowTitle(m_window, title);
+    SetWindowTitle(title);
 
-    // Focus callback
-    glfwSetWindowFocusCallback(glfwWindow_, [](GLFWwindow* window, int focused) {
-        auto* self = static_cast<Platform*>(glfwGetWindowUserPointer(window));
-        if (self) {
-            // Handle focus loss if needed
+    // Set up input callbacks
+    glfwSetKeyCallback(m_window, [](GLFWwindow* win, int key, int scancode, int action, int mods) {
+        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        if (key >= 0 && key < 256) {
+            if (action == GLFW_PRESS) platform->m_inputState.keys[key] = true;
+            else if (action == GLFW_RELEASE) platform->m_inputState.keys[key] = false;
         }
     });
+
+    glfwSetCursorPosCallback(m_window, [](GLFWwindow* win, double xpos, double ypos) {
+        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        platform->m_inputState.mouseDX = (int16_t)xpos;
+        platform->m_inputState.mouseDY = (int16_t)ypos;
+    });
+
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* win, int button, int action, int mods) {
+        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        if (button >= 0 && button < 5) {
+            if (action == GLFW_PRESS) platform->m_inputState.mouseButtons[button] = true;
+            else if (action == GLFW_RELEASE) platform->m_inputState.mouseButtons[button] = false;
+        }
+    });
+
+    glfwSetWindowUserPointer(m_window, this);
+
+    // Set up pointer lock
+    glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     return true;
 }
 
-void Platform::PollEvents() {
+void WindowsPlatform::PollEvents() {
     glfwPollEvents();
-}
-
-bool Platform::ShouldQuit() const {
-    return quit_;
-}
-
-void* Platform::GetVulkanSurface() {
-    // Return the GLFW window as the Vulkan surface will be created from it
-    // The actual VkSurfaceKHR is created by the Vulkan instance
-    return glfwWindow_;
-}
-
-void* Platform::GetVulkanInstance() {
-    return glfwGetVulkanInstance();
-}
-
-std::string Platform::GetSaveDir() {
-    // Windows: %APPDATA%/BlockForge
-    char* appdata = nullptr;
-    _dupenv_s(&appdata, nullptr, "APPDATA");
-    std::string result;
-    if (appdata) {
-        result = std::string(appdata) + "/BlockForge";
-        Free(appdata);
-    } else {
-        result = ".blockforge";
-    }
-    return result;
-}
-
-void Platform::SetWindowTitle(const char* title) {
-    if (glfwWindow_) {
-        glfwSetWindowTitle(glfwWindow_, title);
+    // Check if window should close
+    if (glfwWindowShouldClose(m_window)) {
+        m_shouldQuit = true;
     }
 }
 
-void Platform::Cleanup() {
-    if (glfwWindow_) {
-        glfwDestroyWindow(glfwWindow_);
-        glfwWindow_ = nullptr;
-    }
-    if (glfwInit()) {  // Only terminate if initialized
-        glfwTerminate();
+bool WindowsPlatform::ShouldQuit() const {
+    return m_shouldQuit;
+}
+
+double WindowsPlatform::GetTime() const {
+    return glfwGetTime();
+}
+
+InputState WindowsPlatform::GetInputState() const {
+    return m_inputState;
+}
+
+void WindowsPlatform::SetWindowShouldCloseCallback(bool (*callback)(bool)) {
+    m_closeCallback = callback;
+}
+
+void WindowsPlatform::SetWindowTitle(const char* title) {
+    if (m_window) {
+        glfwSetWindowTitle(m_window, title);
     }
 }
 
-} // namespace platform::windows
+void WindowsPlatform::ShutdownWindow() {
+    if (m_window) {
+        glfwDestroyWindow(m_window);
+        m_window = nullptr;
+    }
+    glfwTerminate();
+}
+
+const char* WindowsPlatform::GetSaveDir() const {
+    static std::string saveDir;
+    if (saveDir.empty()) {
+        // Get APPDATA on Windows
+        char appdata[1024];
+        if (SUCCEEDED(SHGetFolderA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+            saveDir = std::string(appdata) + "\\blockforge";
+        } else {
+            saveDir = ".blockforge";
+        }
+        // Create directory
+        fs::create_directories(saveDir);
+    }
+    return saveDir.c_str();
+}
+
+void WindowsPlatform::SetWindowIcon(const uint8_t* pixels, uint32_t width, uint32_t height) {
+    // Not implemented for now
+    (void)pixels; (void)width; (void)height;
+}

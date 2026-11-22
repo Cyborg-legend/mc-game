@@ -1,14 +1,8 @@
 #pragma once
 
-#include "core/ecs/entity.h"
-#include "core/ecs/mobtype.h"
-#include "core/ecs/position.h"
-#include "core/ecs/velocity.h"
-#include "core/world/world.h"
-#include <glm/glm.hpp>
+#include "core/ecs/world.h"
 #include <cstdint>
 
-// Mob state machine states
 enum class MobState : uint8_t {
     Idle,
     Wander,
@@ -18,32 +12,38 @@ enum class MobState : uint8_t {
     Burn
 };
 
-// Mob AI component
-struct MobAI {
-    MobType type;
-    MobState state;
-    float timer; // For state transitions
-    int targetEntityId; // Entity ID to chase/attack
-    int burnTimer; // Timer for daylight burning
+struct Mob {
+    Entity entityId = 0;
 
-    // Pathfinding
-    glm::vec3 targetPosition; // Target position for movement
+    // Position and velocity
+    float x, y, z;
+    float vx, vy, vz;
+    bool onGround;
 
-    MobAI() : type(MobType::None), state(MobState::Idle), timer(0.0f),
-              targetEntityId(-1), burnTimer(0) {}
+    // State
+    MobType type = MobType::None;
+    MobState state = MobState::Idle;
+    float timer = 0.0f;
 
-    // Update AI state
-    void Update(float deltaTime, World& world, int playerEntityId);
+    // AI parameters
+    float wanderTimer = 0.0f;
+    float wanderRadius = 10.0f;
+    int2d homeChunk; // Chunk coordinates where mob was spawned
 
-    // Decide next state
-    void DecideState(float deltaTime, World& world, int playerEntityId);
+    // Constructor
+    Mob() : onGround(true) {}
 
-    // Simple pathfinding move toward target
-    glm::vec3 MoveTowardTarget(float deltaTime, const World& world);
+    // Update mob AI
+    void Update(float dt, const World& world);
 
-    // Check if can reach target (simple obstacle check)
-    bool CanReachTarget(const World& world, int cx, int cy, int cz);
+    // Move mob with simple collision
+    void Move(float dt, World& world);
 
-    // Get distance to target
-    float DistanceToTarget(const World& world, int playerEntityId) const;
+    // Check if mob should despawn
+    bool ShouldDespawn(float playerDistSq) const;
+
+    // Get position
+    float GetX() const { return x; }
+    float GetY() const { return y; }
+    float GetZ() const { return z; }
 };
