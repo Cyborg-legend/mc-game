@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cstdint>
-#include <array>
 #include <vector>
 #include <functional>
 
-constexpr uint32_t MAX_ENTITIES = 65535;
 using Entity = uint32_t;
+static constexpr Entity MAX_ENTITIES = 65535;
+static constexpr Entity INVALID_ENTITY = MAX_ENTITIES - 1;
 
 struct Position {
     float x, y, z;
@@ -17,61 +17,64 @@ struct Velocity {
 };
 
 struct Health {
-    uint16_t value;
-    uint16_t max;
+    int value;
+    int max;
 };
 
 enum class MobType : uint8_t {
-    None,
-    Wanderer,
-    Chaser,
-    Fleer,
-    Burner
-};
-
-struct MobTypeComponent {
-    MobType type = MobType::None;
-};
-
-struct PlayerInput {
-    bool forward = false;
-    bool backward = false;
-    bool left = false;
-    bool right = false;
-    bool jump = false;
-    bool sprint = false;
+    None = 0,
+    Player,
+    Passive,
+    Neutral,
+    Hostile,
+    Count
 };
 
 class ECS {
 public:
     ECS();
-    ~ECS() = default;
+    ~ECS();
 
-    Entity AddEntity(MobType type = MobType::None);
-    void RemoveEntity(Entity id);
+    Entity AddEntity();
+    void RemoveEntity(Entity e);
+    bool IsAlive(Entity e) const;
 
-    Position& GetPosition(Entity id);
-    const Position& GetPosition(Entity id) const;
-    Velocity& GetVelocity(Entity id);
-    const Velocity& GetVelocity(Entity id) const;
-    Health& GetHealth(Entity id);
-    const Health& GetHealth(Entity id) const;
-    MobType GetMobType(Entity id) const;
-    PlayerInput& GetPlayerInput(Entity id);
-    const PlayerInput& GetPlayerInput(Entity id) const;
+    void SetPosition(Entity e, float x, float y, float z);
+    void SetVelocity(Entity e, float x, float y, float z);
+    void SetHealth(Entity e, int val, int max);
+    void SetMobType(Entity e, MobType type);
+
+    const Position& GetPosition(Entity e) const;
+    const Velocity& GetVelocity(Entity e) const;
+    const Health& GetHealth(Entity e) const;
+    MobType GetMobType(Entity e) const;
+
+    template<typename F>
+    void ForEach(MobType filter, F&& fn) {
+        for (Entity i = 0; i < MAX_ENTITIES; ++i) {
+            if (alive_[i] && mobType_[i] == filter) {
+                fn(i);
+            }
+        }
+    }
+
+    template<typename F>
+    void ForEachAlive(F&& fn) {
+        for (Entity i = 0; i < MAX_ENTITIES; ++i) {
+            if (alive_[i]) {
+                fn(i);
+            }
+        }
+    }
+
+    int GetEntityCount() const { return count_; }
 
 private:
-    // Entity management
-    Entity m_activeEntities[MAX_ENTITIES];
-    Entity m_numActive;
-
-    // Component storage
-    Position m_positions[MAX_ENTITIES];
-    Velocity m_velocities[MAX_ENTITIES];
-    Health m_healths[MAX_ENTITIES];
-    MobTypeComponent m_mobTypes[MAX_ENTITIES];
-    PlayerInput m_playerInputs[MAX_ENTITIES];
-
-    // Mobs storage
-    std::vector<Entity> m_mobs;
-};
+    bool alive_[MAX_ENTITIES];
+    Position positions_[MAX_ENTITIES];
+    Velocity velocities_[MAX_ENTITIES];
+    Health healths_[MAX_ENTITIES];
+    MobType mobType_[MAX_ENTITIES];
+    int count_;
+    Entity nextId_;
+};   

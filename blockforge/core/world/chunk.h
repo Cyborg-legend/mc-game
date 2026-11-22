@@ -1,10 +1,9 @@
 #pragma once
 
 #include <cstdint>
-#include <array>
 #include <unordered_map>
+#include <vector>
 
-// BlockType enum matching spec: Air, Stone, Dirt, Grass, Wood, Leaves, Sand, Water, Bedrock, Planks, Sticks, CraftingTable, Brick (14 types)
 enum class BlockType : uint8_t {
     Air = 0,
     Stone,
@@ -19,79 +18,65 @@ enum class BlockType : uint8_t {
     Sticks,
     CraftingTable,
     Brick,
-    // Keep last for array sizing - max 16 types
-    Count = 16
+    Count = 14
 };
 
-// Static assertion to ensure we don't exceed 16 block types
-static_assert(static_cast<uint8_t>(BlockType::Count) <= 16, "BlockType count must not exceed 16");
-
-// Chunk: 16×16×16 blocks
 static constexpr int CHUNK_SIZE = 16;
-static constexpr int CHUNK_VOLUME = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE; // 4096
-
-using BlockId = uint8_t;
+static constexpr int CHUNK_VOLUME = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
 struct Chunk {
-    BlockId blocks[CHUNK_VOLUME]; // uint8_t blocks[16*16*16]
+    uint8_t blocks[CHUNK_VOLUME];
+    int cx, cy, cz;
+    bool dirty = true;
 
-    // Chunk coordinates
-    int cx, cy, cz; // chunk grid coordinates
-
-    // Construct chunk at given coordinates
-    Chunk(int cx = 0, int cy = 0, int cz = 0) : cx(cx), cy(cy), cz(cz) {
-        // Initialize all blocks to Air
-        for (int i = 0; i < CHUNK_VOLUME; ++i) {
-            blocks[i] = static_cast<BlockId>(BlockType::Air);
-        }
+    Chunk() : cx(0), cy(0), cz(0) {
+        for (int i = 0; i < CHUNK_VOLUME; ++i) blocks[i] = 0;
     }
 
-    // Get block type at local position (x,y,z within chunk)
+    Chunk(int cx, int cy, int cz) : cx(cx), cy(cy), cz(cz) {
+        for (int i = 0; i < CHUNK_VOLUME; ++i) blocks[i] = 0;
+    }
+
     BlockType GetBlock(int x, int y, int z) const {
-        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
-            return BlockType::Air; // Out of bounds
-        }
-        return static_cast<BlockType>(blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x]);
+        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE)
+            return BlockType::Bedrock;
+        return (BlockType)blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x];
     }
 
-    // Set block type (marks chunk modified)
     void SetBlock(int x, int y, int z, BlockType type) {
         if (x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE) {
-            blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x] = static_cast<BlockId>(type);
+            blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x] = (uint8_t)type;
+            dirty = true;
         }
     }
 };
 
-// World class for chunk management
 class World {
 public:
-    World();
-    ~World() = default;
+    World() : seed_(12345) {}
 
-    // Get chunk by coordinates, creates if not exists
-    Chunk& GetOrCreateChunk(int x, int y, int z);
+    void SetSeed(uint64_t seed) { seed_ = seed; }
+    uint64_t GetSeed() const { return seed_; }
 
-    // Get block at world position
-    BlockType GetBlock(int x, int y, int z) const;
+    Chunk& GetOrCreateChunk(int cx, int cy, int cz);
+    const Chunk* GetChunk(int cx, int cy, int cz) const;
 
-    // Set block at world position
+    BlockType GetBlock(int x, int y, int z);
     void SetBlock(int x, int y, int z, BlockType type);
 
-    // Generate terrain chunk using 2D value noise
-    // x,z = chunk coordinates, y ranges from bedrock (y=0) to sky (y=64)
-    void GenerateChunk(int cx, int cz);
+    void GenerateChunk(int cx, int cy, int cz);
+    void GenerateArea(int cx, int cy, int cz, int radius);
 
-    // Get all chunks (for iteration)
-    size_t GetChunkCount() const;
+    size_t GetChunkCount() const { return chunks_.size(); }
+    std::vector<uint64_t> GetDirtyChunks() const;
+    void ClearDirtyFlags();
+
+    static uint64_t PackCoords(int cx, int cy, int cz);
+    static void UnpackCoords(uint64_t key, int& cx, int& cy, int& cz);
 
 private:
-    // Use unordered_map instead of std::array to avoid 16MB stack allocation
-    // Only stores chunks that are actually used
-    std::unordered_map<uint64_t, Chunk> m_chunks;
-
-    // Simple 2D value noise
     float ValueNoise(float x, float z) const;
 
-    // Pack chunk coordinates into key
-    uint32_t PackKey(int cx, int cy, int cz) const;
-};
+    std::unordered_map<uint64_t, Chunk> chunks_;
+    uint64_t seed_;
+};   

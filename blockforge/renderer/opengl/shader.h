@@ -1,40 +1,41 @@
 #pragma once
 
-#include <string>
 #include <GL/glew.h>
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <string>
+#include <unordered_map>
+#include "renderer/meshing/mesh.h"
+#include "core/world/chunk.h"
 
-class Shader {
+class OpenGLRenderer {
 public:
-    GLuint ID;
-    
-    // Constructor reads and builds the shader
-    Shader(const char* vertexPath, const char* fragmentPath);
-    
-    // Activate the shader
-    void use();
-    
-    // Utility functions for setting material/light uniforms
-    void setMat4(const std::string& name, const glm::mat4& mat);
-    void setVec3(const std::string& name, float v0, float v1, float v2);
-    void setVec3(const std::string& name, const glm::vec3& vec);
-    void setFloat(const std::string& name, float value);
-    void setInt(const std::string& name, int value);
-    
-    // Delete copy constructor and assignment
-    Shader& operator=(const Shader&) = delete;
-    Shader(const Shader&) = delete;
-    
-    // Destructor
-    ~Shader();
-    
+    bool Init(GLFWwindow* window);
+    void Shutdown();
+    void Resize(int width, int height);
+
+    void UploadChunk(uint64_t id, const MeshChunk& mesh);
+    void DestroyChunk(uint64_t id);
+    void Render(const World& world, float camX, float camY, float camZ, float yaw, float pitch, float fov);
+
+    void SetTime(float t);
+    void SetRenderDistance(int dist);
+    int GetRenderDistance() const { return renderDistance_; }
+
 private:
-    // Shader source paths
-    std::string vertexPath;
-    std::string fragmentPath;
-    
-    // Utility function for compiling shaders
-    unsigned int compileShader(unsigned int type, const std::string& source);
-    
-    // Utility function for linking program
-    unsigned int linkProgram(unsigned int vertex, unsigned int fragment);
-};
+    struct ChunkMesh {
+        GLuint vao, vbo, ebo;
+        int indexCount;
+    };
+
+    GLuint shader_;
+    std::unordered_map<uint64_t, ChunkMesh> chunkMeshes_;
+    GLuint texture_;
+    int renderDistance_ = 16;
+    float time_ = 0.0f;
+    int width_, height_;
+
+    GLuint CreateShader(const char* vs, const char* fs);
+    void GenerateTexture();
+};   

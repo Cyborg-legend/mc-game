@@ -1,139 +1,107 @@
-#include "audio.h"
+#include <miniaudio.h>
+#include <string>
+#include <vector>
 #include <cmath>
-#include <cstring>
 
-// Static sound data buffers - these are generated at init
-static const float kSampleRate = 44100.0f;
-static const int kNumChannels = 2; // Stereo
+static ma_context ctx;
+static ma_engine engine;
+static ma_device device;
+static bool audioInitialized = false;
+static float masterVolume = 0.5f;
 
-// Generate a noise burst sound (for block break)
-static void GenerateNoiseBurst(float* samples, int numSamples) {
-    for (int i = 0; i < numSamples; ++i) {
-        // Random noise
-        float val = static_cast<float>(rand()) / RAND_MAX - 0.5f;
-        samples[i * kNumChannels + 0] = val; // Left
-        samples[i * kNumChannels + 1] = val; // Right
-    }
-}
+bool AudioInit() {
+    ma_context_config ctxConfig = ma_context_config_init();
+    if (ma_context_init(&ctxConfig, &ctx) != MA_SUCCESS) return false;
 
-// Generate a click sound (for block place)
-static void GenerateClick(float* samples, int numSamples) {
-    // Simple sine wave click
-    for (int i = 0; i < numSamples; ++i) {
-        float t = static_cast<float>(i) / kSampleRate;
-        // Short click envelope
-        float envelope = 1.0f - (static_cast<float>(i) / static_cast<float>(numSamples));
-        float val = std::sinf(2.0f * 440.0f * 3.14159f * t) * envelope * 0.5f;
-        samples[i * kNumChannels + 0] = val;
-        samples[i * kNumChannels + 1] = val;
-    }
-}
+    ma_engine_config engConfig = ma_engine_config_init();
+    if (ma_engine_init(&ctx, &engConfig, &engine) != MA_SUCCESS) return false;
 
-// Generate a whoosh sound (for jump)
-static void GenerateWhoosh(float* samples, int numSamples) {
-    // Rising noise burst
-    for (int i = 0; i < numSamples; ++i) {
-        float t = static_cast<float>(i) / kSampleRate;
-        // Rising pitch
-        float freq = 200.0f + t * 1000.0f;
-        float val = std::sinf(2.0f * 3.14159f * freq * t) * 0.3f;
-        // Noise component
-        val += (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;
-        // Envelope
-        float envelope = 1.0f - (static_cast<float>(i) / static_cast<float>(numSamples)) * 0.5f;
-        val *= envelope;
-        samples[i * kNumChannels + 0] = val;
-        samples[i * kNumChannels + 1] = val;
-    }
-}
+    ma_device_config devConfig = ma_device_config_init(ma_device_type_playback);
+    devConfig.playback.format = ma_format_f32;
+    devConfig.playback.channels = 2;
+    devConfig.playback.sampleRate = 44100;
+    devConfig.playback.deviceId = MA_DEVICE_ID_DEFAULT;
 
-// Generate a thud sound (for hit)
-static void GenerateThud(float* samples, int numSamples) {
-    // Low frequency thud
-    for (int i = 0; i < numSamples; ++i) {
-        float t = static_cast<float>(i) / kSampleRate;
-        // Low frequency sine with fast decay
-        float freq = 100.0f;
-        float val = std::sinf(2.0f * 3.14159f * freq * t) * std::exp(-t * 5.0f);
-        val *= 0.4f;
-        samples[i * kNumChannels + 0] = val;
-        samples[i * kNumChannels + 1] = val;
-    }
-}
+    if (ma_device_init(&engine, &devConfig, &device) != MA_SUCCESS) return false;
+    if (ma_device_start(&device) != MA_SUCCESS) return false;
 
-// Generate a UI blip sound
-static void GenerateBlip(float* samples, int numSamples) {
-    // Short high-pitch beep
-    for (int i = 0; i < numSamples; ++i) {
-        float t = static_cast<float>(i) / kSampleRate;
-        // High frequency sine
-        float val = std::sinf(2.0f * 880.0f * 3.14159f * t);
-        // Fast envelope
-        float envelope = 1.0f - (static_cast<float>(i) / static_cast<float>(numSamples)) * 0.8f;
-        val *= envelope;
-        samples[i * kNumChannels + 0] = val * 0.5f;
-        samples[i * kNumChannels + 1] = val * 0.5f;
-    }
-}
-
-bool AudioSystem::Initialize() {
-    ma_engine_engine_config config = ma_engine_engine_config_default;
-    config.playback.channels = kNumChannels;
-    config.capture.channels = 0;
-    
-    ma_result result = ma_engine_init(&config, &engine);
-    if (result != MA_SUCCESS) {
-        return false;
-    }
-    
+    audioInitialized = true;
     return true;
 }
 
-void AudioSystem::Shutdown() {
+void AudioShutdown() {
+    if (!audioInitialized) return;
+    ma_device_uninit(&device);
     ma_engine_uninit(&engine);
+    ma_context_uninit(&ctx);
+    audioInitialized = false;
 }
 
-void AudioSystem::PlaySound(const char* name, float x, float y, float z, float volume) {
-    // Generate sound data based on name
-    int numSamples = 44100 / 10; // ~0.1 second clip
-    float* samples = new float[numSamples * kNumChannels];
-    
-    if (std::string(name) == "break") {
-        GenerateNoiseBurst(samples, numSamples);
-    } else if (std::string(name) == "place") {
-        GenerateClick(samples, numSamples);
-    } else if (std::string(name) == "jump") {
-        GenerateWhoosh(samples, numSamples);
-    } else if (std::string(name) == "hit") {
-        GenerateThud(samples, numSamples);
-    } else if (std::string(name) == "ui") {
-        GenerateBlip(samples, numSamples);
-    } else {
-        delete[] samples;
-        return;
+void AudioSetListener(float x, float y, float z) {
+    if (!audioInitialized) return;
+    ma_engine_set_listener(&engine, x, y, z, 0, -1, 0, 0, 0, -1);
+}
+
+void AudioSetVolume(float vol) {
+    masterVolume = vol;
+    if (audioInitialized)
+        ma_engine_set_volume(&engine, vol);
+}
+
+void AudioPlayBreakSound() {
+    if (!audioInitialized) return;
+    static float samples[441];
+    for (int i = 0; i < 441; ++i) {
+        samples[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * (1.0f - (float)i / 441.0f) * 0.3f;
     }
-    
-    // Create miniaudio sound
+
+    ma_sound_config config = ma_sound_config_init();
+    config.playback.frameCount = 441;
+    config.playback.channels = 1;
+    config.playback.sampleRate = 44100;
+    config.loop = false;
+
     ma_sound sound;
-    ma_sound_config soundConfig = ma_sound_config_default();
-    soundConfig.playback.format = ma_format_f32;
-    soundConfig.playback.channels = kNumChannels;
-    soundConfig.playback.internalSampleRate = kSampleRate;
-    
-    ma_result result = ma_sound_init_from_data(&engine, samples, numSamples * kNumChannels * sizeof(float),
-        &soundConfig, MA_SOUND_FLAG_NONE, nullptr, nullptr, &sound);
-    
-    if (result == MA_SUCCESS) {
-        // Set 3D position if we have position data
-        // miniaudio 3D would use panning based on listener position
-        // For now, just play at default position
+    if (ma_sound_init_from_data(&engine, samples, sizeof(samples), &config, &sound) == MA_SUCCESS) {
         ma_sound_start(&sound);
     }
-    
-    delete[] samples;
 }
 
-void AudioSystem::UpdateListener(float x, float y, float z) {
-    // Update the engine's listener position
-    ma_engine_set_listener_position(&engine, x, y, z);
+void AudioPlayPlaceSound() {
+    if (!audioInitialized) return;
+    static float samples[220];
+    for (int i = 0; i < 220; ++i) {
+        samples[i] = sinf((float)i / 220.0f * 3.14159f * 4.0f) * (1.0f - (float)i / 220.0f) * 0.2f;
+    }
+
+    ma_sound_config config = ma_sound_config_init();
+    config.playback.frameCount = 220;
+    config.playback.channels = 1;
+    config.playback.sampleRate = 44100;
+    config.loop = false;
+
+    ma_sound sound;
+    if (ma_sound_init_from_data(&engine, samples, sizeof(samples), &config, &sound) == MA_SUCCESS) {
+        ma_sound_start(&sound);
+    }
 }
+
+void AudioPlayJumpSound() {
+    if (!audioInitialized) return;
+    static float samples[330];
+    for (int i = 0; i < 330; ++i) {
+        float t = (float)i / 330.0f;
+        samples[i] = sinf(t * 3.14159f * 6.0f) * (1.0f - t) * 0.1f;
+    }
+
+    ma_sound_config config = ma_sound_config_init();
+    config.playback.frameCount = 330;
+    config.playback.channels = 1;
+    config.playback.sampleRate = 44100;
+    config.loop = false;
+
+    ma_sound sound;
+    if (ma_sound_init_from_data(&engine, samples, sizeof(samples), &config, &sound) == MA_SUCCESS) {
+        ma_sound_start(&sound);
+    }
+}   

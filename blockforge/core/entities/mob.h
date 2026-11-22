@@ -28,10 +28,10 @@ struct Mob {
     // AI parameters
     float wanderTimer = 0.0f;
     float wanderRadius = 10.0f;
-    int2d homeChunk; // Chunk coordinates where mob was spawned
+    // int2d homeChunk; // Chunk coordinates where mob was spawned (removed - was not a virtual override)
 
-    // Constructor
-    Mob() : onGround(true) {}
+    // Constructor declaration - definition in mob.cpp
+    Mob();
 
     // Update mob AI
     void Update(float dt, const World& world);

@@ -1,50 +1,51 @@
 #pragma once
 
-#include "core/ecs/world.h"
-#include "core/world/chunk.h"
-#include "platform/common/iplatform.h"
 #include <cstdint>
+#include "core/world/chunk.h"
+
+static constexpr int MAX_INVENTORY = 36;
+static constexpr int HOTBAR_SLOTS = 9;
+
+struct InventorySlot {
+    BlockType type = BlockType::Air;
+    int count = 0;
+};
 
 struct Player {
-    // Position and velocity
     float x, y, z;
     float vx, vy, vz;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    bool onGround = false;
+    bool isSprinting = false;
+    bool isFlying = false;
 
-    // State
-    bool onGround;
-    uint16_t health;
+    float gravity = -20.0f;
+    float jumpVelocity = 8.0f;
+    float walkSpeed = 4.0f;
+    float sprintSpeed = 6.0f;
 
-    // Input
-    struct Input {
-        bool forward = false;
-        bool backward = false;
-        bool left = false;
-        bool right = false;
-        bool jump = false;
-        bool sprint = false;
-    } input;
+    int health = 20;
+    int maxHealth = 20;
 
-    // Inventory
-    uint8_t inventory[36]; // 36 slots
-    uint8_t hotbar[9];     // 9 hotbar slots
+    InventorySlot inventory[MAX_INVENTORY];
+    int hotbarIndex = 0;
 
-    // Hotbar selection (1-9 -> index 0-8)
-    int8_t selectedSlot = 0;
+    float width = 0.6f;
+    float height = 1.8f;
 
-    // Constructor
-    Player();
+    Player() : x(0), y(64), z(0), vx(0), vy(0), vz(0) {
+        for (int i = 0; i < MAX_INVENTORY; ++i) {
+            inventory[i] = {};
+        }
+    }
 
-    // Update player physics with fixed timestep
-    void Update(float dt, const InputState& input);
-
-    // AABB collision bounds
-    float GetWidth() const { return 0.6f; }
-    float GetHeight() const { return 1.8f; }
-
-    // Raycast for block interactions
-    bool Raycast(const World& world, float maxDist, float& outX, float& outY, float& outZ, BlockType& outType);
-
-    // Place/break block
-    bool PlaceBlock(World& world, int mouseButton);
-    bool BreakBlock(World& world);
-};
+    void Update(float dt, const bool keys[], int mouseButtons[]);
+    void Move(float dt, class World& world);
+    void Jump();
+    void Look(float dx, float dy);
+    bool PlaceBlock(class World& world, const bool mouseButtons[]);
+    bool BreakBlock(class World& world, const bool mouseButtons[]);
+    void CycleHotbar(int direction);
+    void SetHotbar(int index);
+};   

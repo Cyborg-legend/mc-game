@@ -6,13 +6,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(glfw3 REQUIRED)
 
-file(GLOB_RECURSE ALL_SOURCES ${CMAKE_SOURCE_DIR}/**/*.cpp)
-list(REMOVE_ITEM ALL_SOURCES ${CMAKE_SOURCE_DIR}/main.cpp)   
+file(GLOB_RECURSE ALL_SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+list(REMOVE_ITEM ALL_SOURCES ${CMAKE_SOURCE_DIR}/main.cpp)
 
 add_library(blockforge_lib STATIC ${ALL_SOURCES})
 
 target_include_directories(blockforge_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/..
     ${CMAKE_SOURCE_DIR}/core
     ${CMAKE_SOURCE_DIR}/core/ecs
     ${CMAKE_SOURCE_DIR}/core/world
@@ -27,10 +28,10 @@ target_include_directories(blockforge_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/platform/windows
     ${CMAKE_SOURCE_DIR}/platform/linux
     ${CMAKE_SOURCE_DIR}/audio
-    ${CMAKE_SOURCE_DIR}/..    # For nlohmann/json and glm_deps (parent of blockforge)
-    ${CMAKE_SOURCE_DIR}/glew_deps/include
-    ${CMAKE_SOURCE_DIR}/nlohmann
-    ${CMAKE_SOURCE_DIR}/glfw_deps/include
+    ${CMAKE_SOURCE_DIR}/../glm_deps
+    ${CMAKE_SOURCE_DIR}/../glew_deps/include
+    ${CMAKE_SOURCE_DIR}/../nlohmann
+    ${CMAKE_SOURCE_DIR}/../glfw_deps/include
 )
 
 target_link_libraries(blockforge_lib PUBLIC
@@ -42,4 +43,4 @@ target_link_libraries(blockforge_lib PUBLIC
 )
 
 add_executable(blockforge main.cpp)
-target_link_libraries(blockforge PRIVATE blockforge_lib)
+target_link_libraries(blockforge PRIVATE blockforge_lib)   

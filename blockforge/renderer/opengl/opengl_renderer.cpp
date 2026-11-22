@@ -1,424 +1,222 @@
 #include "opengl_renderer.h"
-#include "meshing/mesh.h"
-#include "core/world/chunk.h"
-#include <glm/glm.hpp>
-#include <iostream>
-#include <string>
+#include <cmath>
 
-// ============================================================
-// Shader implementation - uses embedded source strings
-// ============================================================
+static const char* VS_SRC = "#version 330 core\n"
+"layout(location=0) in vec3 aPos;\n"
+"layout(location=1) in vec3 aNormal;\n"
+"layout(location=2) in vec2 aUV;\n"
+"layout(location=3) in float aAO;\n"
+"uniform mat4 model, view, projection;\n"
+"out vec3 vNormal;\n"
+"out vec2 vUV;\n"
+"out float vAO;\n"
+"void main(){\n"
+"  gl_Position = projection * view * model * vec4(aPos,1.0);\n"
+"  vNormal = aNormal;\n"
+"  vUV = aUV;\n"
+"  vAO = aAO;\n"
+"}\n";
 
-Shader::Shader(const char* vertexSource, const char* fragmentSource)
-    : vertexSource_(vertexSource), fragmentSource_(fragmentSource)
-{
-    unsigned int vertex, fragment;
-    int success;
-    char infoLog[512];
+static const char* FS_SRC = "#version 330 core\n"
+"in vec3 vNormal;\n"
+"in vec2 vUV;\n"
+"in float vAO;\n"
+"uniform sampler2D tex;\n"
+"uniform vec3 sunDir;\n"
+"uniform float time;\n"
+"out vec4 fragColor;\n"
+"void main(){\n"
+"  vec3 col = texture(tex, vUV).rgb;\n"
+"  float diff = max(dot(normalize(vNormal), sunDir), 0.0);\n"
+"  float ambient = 0.4;\n"
+"  vec3 light = (ambient + diff * 0.6) * col * vAO;\n"
+"  float dayFactor = 0.5 + 0.5 * sin(time * 0.05);\n"
+"  light *= (0.3 + 0.7 * dayFactor);\n"
+"  fragColor = vec4(light, 1.0);\n"
+"}\n";
 
-    // Compile vertex shader
-    vertex = compileShader(GL_VERTEX_SHADER, std::string(vertexSource_));
-    if (!vertex) {
-        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED" << std::endl;
-        return;
-    }
+bool OpenGLRenderer::Init(GLFWwindow* window) {
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) return false;
 
-    // Compile fragment shader
-    fragment = compileShader(GL_FRAGMENT_SHADER, std::string(fragmentSource_));
-    if (!fragment) {
-        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED" << std::endl;
-        return;
-    }
+    shader_ = CreateShader(VS_SRC, FS_SRC);
+    if (shader_ == 0) return false;
 
-    // Link program
-    ID = glCreateProgram();
-    glAttachShader(ID, vertex);
-    glAttachShader(ID, fragment);
-    glLinkProgram(ID);
+    GenerateTexture();
 
-    glGetProgramiv(ID, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(ID, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-
-    // Delete shaders as they're linked into our program now
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
-}
-
-Shader::~Shader() {
-    if (ID) glDeleteProgram(ID);
-}
-
-unsigned int Shader::compileShader(unsigned int type, const std::string& source) {
-    unsigned int shader = glCreateShader(type);
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr);
-    glCompileShader(shader);
-
-    int success;
-    char infoLog[512];
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-    return shader;
-}
-
-// ============================================================
-// OpenGLRenderer implementation
-// ============================================================
-
-// Embedded shader source code - vertex shader
-static const char* kVertexShaderSource = "#version 330 core\n"
-// Attributes: position, normal, uv, ao
-"layout(location = 0) in vec3 aPos;\n"
-"layout(location = 1) in vec3 aNormal;\n"
-"layout(location = 2) in vec2 aUV;\n"
-"layout(location = 3) in float aAO;\n"
-// Output to fragment shader
-"out vec3 WorldNormal;\n"
-"out vec2 TexCoords;\n"
-"out float AO;\n"
-// Uniforms
-"uniform mat4 model;\n"
-"uniform mat4 view;\n"
-"uniform mat4 projection;\n"
-"uniform vec3 lightPos;\n"
-"uniform vec3 viewPos;\n"
-// Material
-"uniform float shininess = 32.0;\n"
-"void main()\n"
-"{\n"
-"    gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-// Pass normal and UV to fragment shader
-"    WorldNormal = normalize(mat3(model) * aNormal);\n"
-"    TexCoords = aUV;\n"
-"    AO = aAO;\n"
-"}";
-
-// Embedded shader source code - fragment shader
-static const char* kFragmentShaderSource = "#version 330 core\n"
-// Texture sampling, directional light + ambient, AO modulation
-"in vec3 WorldNormal;\n"
-"in vec2 TexCoords;\n"
-"in float AO;\n"
-// Output
-"out vec4 FragColor;\n"
-// Texture sampler for the 256x256 atlas
-"uniform sampler2D texAtlas;\n"
-// Material
-"uniform vec3 lightPos;\n"
-"uniform vec3 viewPos;\n"
-"uniform float shininess = 32.0;\n"
-// Block type colors (approximate)
-"struct BlockColor {\n"
-"    vec3 ambient;\n"
-"    vec3 diffuse;\n"
-"    vec3 specular;\n"
-"};\n"
-// 16-block color palette
-"const BlockColor blockColors[16] = {\n"
-"    [0] = {vec3(0.0), vec3(0.0), vec3(0.0)},       // Air - invisible\n"
-"    [1] = {vec3(0.1), vec3(0.5, 0.5, 0.5), vec3(0.0)},   // Stone\n"
-"    [2] = {vec3(0.1), vec3(0.6, 0.4, 0.2), vec3(0.0)},   // Dirt\n"
-"    [3] = {vec3(0.1), vec3(0.1, 0.8, 0.1), vec3(0.0)},   // Grass\n"
-"    [4] = {vec3(0.1), vec3(0.5, 0.3, 0.1), vec3(0.1)},   // Wood\n"
-"    [5] = {vec3(0.1), vec3(0.2, 0.7, 0.2), vec3(0.0)},   // Leaves\n"
-"    [6] = {vec3(0.1), vec3(0.8, 0.8, 0.2), vec3(0.0)},   // Sand\n"
-"    [7] = {vec3(0.1), vec3(0.1, 0.5, 0.8), vec3(0.0)},   // Water\n"
-"    [8] = {vec3(0.1), vec3(0.3, 0.3, 0.3), vec3(0.0)},   // Bedrock\n"
-"    [9] = {vec3(0.1), vec3(0.7, 0.6, 0.4), vec3(0.1)},   // Planks\n"
-"    [10] = {vec3(0.1), vec3(0.6, 0.6, 0.6), vec3(0.0)},  // Sticks\n"
-"    [11] = {vec3(0.1), vec3(0.8, 0.6, 0.3), vec3(0.1)},  // CraftingTable\n"
-"    [12] = {vec3(0.1), vec3(0.7, 0.3, 0.3), vec3(0.1)},  // Brick\n"
-"    [13] = {vec3(0.0), vec3(0.0), vec3(0.0)},  // placeholder\n"
-"    [14] = {vec3(0.0), vec3(0.0), vec3(0.0)},  // placeholder\n"
-"    [15] = {vec3(0.0), vec3(0.0), vec3(0.0)}   // Count\n"
-"};\n"
-"void main()\n"
-"{\n"
-// Get block type from texture coordinate (first channel)
-"    vec4 texColor = texture(texAtlas, TexCoords);\n"
-// Use the block type index from RGB
-"    int blockType = int(texColor.r * 15.0); // assuming type index 0-15 packed in r\n"
-// Clamp to valid range
-"    if (blockType < 0) blockType = 0;\n"
-"    if (blockType >= 16) blockType = 15;\n"
-// Get block color
-"    BlockColor bc = blockColors[blockType];\n"
-// Ambient
-"    vec3 ambient = bc.ambient;\n"
-// Diffuse lighting (Lambert)
-"    vec3 normal = normalize(WorldNormal);\n"
-"    vec3 lightDir = normalize(lightPos - viewPos);\n"
-"    float diff = max(dot(normal, lightDir), 0.0);\n"
-"    vec3 diffuse = bc.diffuse * diff;\n"
-// Specular (Blinn-Phong)
-"    vec3 viewDir = normalize(viewPos - vec3(0.0)); // Simplified\n"
-"    float spec = pow(max(dot(viewDir, normal), 0.0), shininess);\n"
-"    vec3 specular = bc.specular * spec;\n"
-// Combine
-"    vec3 result = ambient + diffuse + specular;\n"
-// Apply AO
-"    result *= AO;\n"
-// Water transparency
-"    if (blockType == 7) { // Water\n"
-"        result *= vec3(0.5); // Dim water\n"
-"        FragColor = vec4(result, 0.6); // Semi-transparent\n"
-"    } else {\n"
-"        FragColor = vec4(result, 1.0);\n"
-"    }\n"} ;
-
-Shader::Shader() 
-    : vertexSource_(kVertexShaderSource), fragmentSource_(kFragmentShaderSource)
-{
-    // Initialize with embedded sources
-    unsigned int vertex, fragment;
-    int success;
-    char infoLog[512];
-
-    // Compile vertex shader
-    vertex = compileShader(GL_VERTEX_SHADER, std::string(vertexSource_));
-    if (!vertex) {
-        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED" << std::endl;
-        return;
-    }
-
-    // Compile fragment shader
-    fragment = compileShader(GL_FRAGMENT_SHADER, std::string(fragmentSource_));
-    if (!fragment) {
-        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED" << std::endl;
-        return;
-    }
-
-    // Link program
-    ID = glCreateProgram();
-    glAttachShader(ID, vertex);
-    glAttachShader(ID, fragment);
-    glLinkProgram(ID);
-
-    glGetProgramiv(ID, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(ID, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-
-    // Delete shaders as they're linked into our program now
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
-}
-
-OpenGLRenderer::OpenGLRenderer()
-    : shader_(kVertexShaderSource, kFragmentShaderSource),
-      vao_(0), vbo_(0), ibo_(0), textureAtlas_(0),
-      lightPos_(0.0f, 20.0f, 0.0f), renderDistance_(16) {}
-
-OpenGLRenderer::~OpenGLRenderer() {
-    if (vao_) glDeleteVertexArrays(1, &vao_);
-    if (vbo_) glDeleteBuffers(1, &vbo_);
-    if (ibo_) glDeleteBuffers(1, &ibo_);
-}
-
-bool OpenGLRenderer::init() {
-    // GLEW is initialized elsewhere (in main.cpp), just ensure we can use it
-    // Check OpenGL version
-    const char* glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    std::cout << "OpenGL Version: " << glVersion << std::endl;
-    const char* glslVersion = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
-    std::cout << "GLSL Version: " << glslVersion << std::endl;
-
-    // Enable depth testing
     glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
+    glClearColor(0.4f, 0.6f, 0.9f, 1.0f);
 
-    // Enable cull face
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    // Setup VAO/VBO for chunk meshes
-    initMeshBuffers();
-
-    // Set light position
-    shader_.setVec3("lightPos", lightPos_.x, lightPos_.y, lightPos_.z);
-
+    int w, h;
+    glfwGetFramebufferSize(window, &w, &h);
+    width_ = w;
+    height_ = h;
     return true;
 }
 
-void OpenGLRenderer::initMeshBuffers() {
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
-    glGenBuffers(1, &ibo_);
+void OpenGLRenderer::Shutdown() {
+    for (auto& pair : chunkMeshes_) {
+        glDeleteVertexArrays(1, &pair.second.vao);
+        glDeleteBuffers(1, &pair.second.vbo);
+        glDeleteBuffers(1, &pair.second.ebo);
+    }
+    chunkMeshes_.clear();
+    if (shader_) glDeleteProgram(shader_);
+    if (texture_) glDeleteTextures(1, &texture_);
+}
 
-    glBindVertexArray(vao_);
+void OpenGLRenderer::Resize(int w, int h) {
+    width_ = w;
+    height_ = h;
+    glViewport(0, 0, w, h);
+}
 
-    // Vertex buffer
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+GLuint OpenGLRenderer::CreateShader(const char* vs, const char* fs) {
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glCompileShader(v);
 
-    // Index buffer
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, nullptr);
+    glCompileShader(f);
 
-    // Vertex attribute pointers (setup once, data updated per chunk)
-    // Position (3 floats)
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, v);
+    glAttachShader(prog, f);
+    glLinkProgram(prog);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return prog;
+}
+
+void OpenGLRenderer::GenerateTexture() {
+    // 16x16 pixel art atlas, 4x4 grid of 16x16 tiles = 64x64
+    unsigned char pixels[64 * 64 * 4];
+    memset(pixels, 0, sizeof(pixels));
+
+    auto setPixel = [&](int x, int y, unsigned char r, unsigned char g, unsigned char b) {
+        int idx = (y * 64 + x) * 4;
+        pixels[idx] = r;
+        pixels[idx+1] = g;
+        pixels[idx+2] = b;
+        pixels[idx+3] = 255;
+    };
+
+    // Tile 0: Grass top (green)
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++)
+            setPixel(x, y, 80 + (x*3)%20, 160 + (y*2)%30, 60);
+
+    // Tile 1: Dirt (brown)
+    for (int y = 16; y < 32; y++)
+        for (int x = 0; x < 16; x++)
+            setPixel(x, y, 130 + (x*2)%15, 90 + (y*2)%10, 60);
+
+    // Tile 2: Stone (gray)
+    for (int y = 32; y < 48; y++)
+        for (int x = 16; x < 32; x++)
+            setPixel(x, y, 120 + (x+y)%20, 120 + (x+y)%20, 120 + (x+y)%20);
+
+    // Tile 3: Wood (brown vertical stripes)
+    for (int y = 48; y < 64; y++)
+        for (int x = 32; x < 48; x++)
+            setPixel(x, y, 100 + (x%4)*10, 70, 40);
+
+    glGenTextures(1, &texture_);
+    glBindTexture(GL_TEXTURE_2D, texture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+}
+
+void OpenGLRenderer::UploadChunk(uint64_t id, const MeshChunk& mesh) {
+    if (mesh.vertexCount == 0) return;
+
+    ChunkMesh cm;
+    glGenVertexArrays(1, &cm.vao);
+    glGenBuffers(1, &cm.vbo);
+    glGenBuffers(1, &cm.ebo);
+    cm.indexCount = (int)mesh.indexCount;
+
+    glBindVertexArray(cm.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, cm.vbo);
+    glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(Vertex), mesh.vertices.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cm.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint32_t), mesh.indices.data(), GL_STATIC_DRAW);
+
+    // Position
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-
-    // Normal (3 floats)
+    // Normal
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
-
-    // UV (2 floats)
+    // UV
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, uv));
-
-    // AO (1 float)
+    // AO
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, ao));
 
     glBindVertexArray(0);
+    chunkMeshes_[id] = cm;
 }
 
-void OpenGLRenderer::uploadChunk(uint64_t id, const MeshChunk& mesh) {
-    uploadedChunks_[id] = mesh;
-
-    if (mesh.vertices.empty() || mesh.indices.empty()) return;
-
-    // Update VBO with mesh data
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER,
-        mesh.vertices.size() * sizeof(Vertex),
-        mesh.vertices.data(),
-        GL_DYNAMIC_DRAW);
-
-    // Update IBO with index data
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-        mesh.indices.size() * sizeof(uint32_t),
-        mesh.indices.data(),
-        GL_DYNAMIC_DRAW);
-}
-
-void OpenGLRenderer::destroyChunk(uint64_t id) {
-    uploadedChunks_.erase(id);
-    // No explicit GPU cleanup needed - VAO/VBO are shared
-}
-
-bool OpenGLRenderer::isChunkVisible(uint64_t chunkKey, const Camera& cam) {
-    // Unpack chunk coordinates
-    int cx, cy, cz;
-    // World::UnpackCoords(chunkKey, cx, cy, cz); // Simplified
-
-    // Chunk AABB: 16×16×16 blocks, each block is 1 unit
-    // For now, use a simple distance check
-    // In a full implementation, this would be a 6-plane frustum test
-
-    // Get chunk center (assuming chunk 0,0,0 for simplicity)
-    float cxf = 8.0f; // chunk center X
-    float cyf = 8.0f; // chunk center Y
-    float czf = 8.0f; // chunk center Z
-
-    // Distance from camera to chunk center
-    float dx = cxf - cam.position.x;
-    float dy = cyf - cam.position.y;
-    float dz = czf - cam.position.z;
-    float distSq = dx * dx + dy * dy + dz * dz;
-
-    // Simple distance-based culling
-    // Visible if within render distance
-    float maxDist = renderDistance_ * 16.0f + 8.0f;
-    return distSq < maxDist * maxDist;
-}
-
-void OpenGLRenderer::render(const Camera& cam, const std::vector<uint64_t>& visibleChunks) {
-    if (!shader_.ID) {
-        std::cerr << "Shader not initialized!" << std::endl;
-        return;
+void OpenGLRenderer::DestroyChunk(uint64_t id) {
+    auto it = chunkMeshes_.find(id);
+    if (it != chunkMeshes_.end()) {
+        glDeleteVertexArrays(1, &it->second.vao);
+        glDeleteBuffers(1, &it->second.vbo);
+        glDeleteBuffers(1, &it->second.ebo);
+        chunkMeshes_.erase(it);
     }
+}
 
-    shader_.use();
+void OpenGLRenderer::SetTime(float t) { time_ = t; }
+void OpenGLRenderer::SetRenderDistance(int d) { renderDistance_ = d; }
 
-    // Set projection matrix
-    shader_.setMat4("projection", cam.projection);
+void OpenGLRenderer::Render(const World& world, float camX, float camY, float camZ, float yaw, float pitch, float fov) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Set view matrix
-    shader_.setMat4("view", cam.getViewMatrix());
+    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)width_ / (float)height_, 0.1f, 1000.0f);
+    glm::mat4 view = glm::lookAt(
+        glm::vec3(camX, camY - 0.5f, camZ),
+        glm::vec3(camX - sinf(yaw) * cosf(pitch), camY - 0.5f + sinf(pitch), camZ - cosf(yaw) * cosf(pitch)),
+        glm::vec3(0, 1, 0)
+    );
 
-    // Set camera position
-    shader_.setVec3("viewPos", cam.position.x, cam.position.y, cam.position.z);
+    glUseProgram(shader_);
+    glUniformMatrix4fv(glGetUniformLocation(shader_, "projection"), 1, GL_FALSE, &projection[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(shader_, "view"), 1, GL_FALSE, &view[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(shader_, "model"), 1, GL_FALSE, &glm::mat4(1.0f)[0][0]);
+    glUniform1f(glGetUniformLocation(shader_, "time"), time_);
+    glUniform3f(glGetUniformLocation(shader_, "sunDir"), 0.5f, 1.0f, 0.3f);
+    glUniform1i(glGetUniformLocation(shader_, "tex"), 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture_);
 
-    // Set light position
-    shader_.setVec3("lightPos", lightPos_.x, lightPos_.y, lightPos_.z);
+    for (auto& pair : chunkMeshes_) {
+        int cx, cy, cz;
+        World::UnpackCoords(pair.first, cx, cy, cz);
 
-    // Set render distance uniform
-    shader_.setInt("renderDistance", renderDistance_);
+        // Simple distance cull
+        float dx = (float)(cx * CHUNK_SIZE + 8 - (int)camX);
+        float dz = (float)(cz * CHUNK_SIZE + 8 - (int)camZ);
+        float dist = sqrtf(dx*dx + dz*dz);
+        if (dist > renderDistance_ * CHUNK_SIZE) continue;
 
-    // Bind VAO
-    glBindVertexArray(vao_);
+        // Frustum cull (simple)
+        float chunkCenterX = (float)(cx * CHUNK_SIZE + 8);
+        float chunkCenterY = (float)(cy * CHUNK_SIZE + 8);
+        float chunkCenterZ = (float)(cz * CHUNK_SIZE + 8);
+        glm::vec4 clip = projection * view * glm::vec4(chunkCenterX, chunkCenterY, chunkCenterZ, 1.0f);
+        if (std::abs(clip.x) > clip.w || std::abs(clip.y) > clip.w || std::abs(clip.z) > clip.w)
+            continue;
 
-    // Render each visible chunk
-    for (uint64_t chunkKey : visibleChunks) {
-        auto it = uploadedChunks_.find(chunkKey);
-        if (it == uploadedChunks_.end()) continue;
-
-        const MeshChunk& mesh = it->second;
-
-        if (mesh.vertices.empty() || mesh.indices.empty()) continue;
-
-        // Update VBO/IBO with current chunk data
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-            mesh.vertices.size() * sizeof(Vertex),
-            mesh.vertices.data(),
-            GL_DYNAMIC_DRAW);
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-            mesh.indices.size() * sizeof(uint32_t),
-            mesh.indices.data(),
-            GL_DYNAMIC_DRAW);
-
-        // Draw the chunk
-        glDrawElements(GL_TRIANGLES,
-            mesh.indexCount,
-            GL_UNSIGNED_INT,
-            0);
+        glBindVertexArray(pair.second.vao);
+        glDrawElements(GL_TRIANGLES, pair.second.indexCount, GL_UNSIGNED_INT, 0);
     }
-
-    // Unbind
     glBindVertexArray(0);
-}
-
-void OpenGLRenderer::setTextureAtlas(GLuint atlas) {
-    textureAtlas_ = atlas;
-}
-
-void OpenGLRenderer::setLightPosition(const glm::vec3& pos) {
-    lightPos_ = pos;
-    shader_.setVec3("lightPos", pos.x, pos.y, pos.z);
-}
-
-void OpenGLRenderer::updateRenderDistance(float frameTime) {
-    renderDistanceTimer_ += static_cast<int>(frameTime * 1000.0f); // Convert to ms
-
-    if (renderDistanceTimer_ >= 10000) { // 10 seconds
-        // Check average frame time - if < 16ms, increase; if > 33ms, decrease
-        if (lastFrameTime_ < 16.0f / 1000.0f) {
-            // Increase render distance
-            if (renderDistance_ < 64) {
-                renderDistance_ += 2;
-            }
-        }
-        else if (lastFrameTime_ > 33.0f / 1000.0f) {
-            // Decrease render distance
-            if (renderDistance_ > 8) {
-                renderDistance_ -= 2;
-            }
-        }
-        renderDistanceTimer_ = 0;
-    }
-    // Clamp range: 8-64
-    if (renderDistance_ < 8) renderDistance_ = 8;
-    if (renderDistance_ > 64) renderDistance_ = 64;
-}
+}   

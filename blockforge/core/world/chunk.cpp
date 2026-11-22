@@ -1,140 +1,120 @@
-#include "world/chunk.h"
+#include "chunk.h"
 #include <cmath>
 
-// Chunk coordinates modulo the fixed pool size
-// Pool is 4096 chunks = 64x64 grid in XZ, unlimited Y (but we use 64 for simplicity)
-
-Chunk& World::GetOrCreateChunk(int x, int y, int z) {
-    // Map world coordinates to chunk grid indices within the 64x64x64 pool
-    // Chunk size is 16 blocks
-    int cx = (x / CHUNK_SIZE) % 64;
-    if (cx < 0) cx += 64;
-    int cy = (y / CHUNK_SIZE); // Can be negative or positive
-    int cz = (z / CHUNK_SIZE) % 64;
-    if (cz < 0) cz += 64;
-
-    // Flat index into the 4096 chunk pool (64*64 layout in XZ)
-    int chunkIdx = (cx * 64) + cz;
-
-    // If y is negative, we still use the same XZ chunk but different "layer"
-    // For simplicity, use cy modulo 64 for the Y direction too
-    // But we have only 4096 chunks total, so we pack XZ into 64*64 and ignore Y pooling
-    // Actually, let's just use cx and cz for the 4096 pool, y is ignored for indexing
-    // and we always modify the same Y layer. For a proper game, Y would be another dimension.
-    // For now, just use the XZ plane:
-    chunkIdx = (cx * 64) + cz;
-
-    return m_chunks[chunkIdx];
+uint64_t World::PackCoords(int cx, int cy, int cz) {
+    return ((uint64_t)(uint32_t)cx << 32) | ((uint64_t)(uint32_t)cy << 16) | (uint32_t)cz;
 }
 
-BlockType World::GetBlock(int x, int y, int z) const {
-    if (y < 0 || y > 255) return BlockType::Air;
+void World::UnpackCoords(uint64_t key, int& cx, int& cy, int& cz) {
+    cx = (int)((key >> 32) & 0xFFFFFFFF);
+    cy = (int)((key >> 16) & 0xFFFF);
+    cz = (int)(key & 0xFFFF);
+}
 
-    int cx = (x / CHUNK_SIZE) % 64;
-    if (cx < 0) cx += 64;
-    int cz = (z / CHUNK_SIZE) % 64;
-    if (cz < 0) cz += 64;
+Chunk& World::GetOrCreateChunk(int cx, int cy, int cz) {
+    uint64_t key = PackCoords(cx, cy, cz);
+    auto it = chunks_.find(key);
+    if (it != chunks_.end()) return it->second;
+    auto result = chunks_.emplace(key, Chunk(cx, cy, cz));
+    return result.first->second;
+}
 
-    int chunkIdx = (cx * 64) + cz;
-    if (chunkIdx < 0 || chunkIdx >= 4096) return BlockType::Air;
+const Chunk* World::GetChunk(int cx, int cy, int cz) const {
+    uint64_t key = PackCoords(cx, cy, cz);
+    auto it = chunks_.find(key);
+    if (it != chunks_.end()) return &it->second;
+    return nullptr;
+}
 
-    return m_chunks[chunkIdx].GetBlock(x % CHUNK_SIZE, y, z % CHUNK_SIZE);
+BlockType World::GetBlock(int x, int y, int z) {
+    int cx = x / CHUNK_SIZE;
+    int cy = y / CHUNK_SIZE;
+    int cz = z / CHUNK_SIZE;
+    int lx = x - cx * CHUNK_SIZE;
+    int ly = y - cy * CHUNK_SIZE;
+    int lz = z - cz * CHUNK_SIZE;
+
+    const Chunk* chunk = GetChunk(cx, cy, cz);
+    if (!chunk) return BlockType::Air;
+    return chunk->GetBlock(lx, ly, lz);
 }
 
 void World::SetBlock(int x, int y, int z, BlockType type) {
-    if (y < 0 || y > 255) return;
+    int cx = x / CHUNK_SIZE;
+    int cy = y / CHUNK_SIZE;
+    int cz = z / CHUNK_SIZE;
+    int lx = x - cx * CHUNK_SIZE;
+    int ly = y - cy * CHUNK_SIZE;
+    int lz = z - cz * CHUNK_SIZE;
 
-    int cx = (x / CHUNK_SIZE) % 64;
-    if (cx < 0) cx += 64;
-    int cz = (z / CHUNK_SIZE) % 64;
-    if (cz < 0) cz += 64;
-
-    int chunkIdx = (cx * 64) + cz;
-    if (chunkIdx < 0 || chunkIdx >= 4096) return;
-
-    m_chunks[chunkIdx].SetBlock(x % CHUNK_SIZE, y, z % CHUNK_SIZE, type);
-}
-
-void World::GenerateChunk(int cx, int cz) {
-    // 2D value noise terrain
-    // y=0 bedrock to y=64 sky
-    // cx,cz are chunk coordinates in the XZ plane
-
-    // Compute chunk index from cx,cz within the 4096 chunk pool (64x64 grid)
-    int chunkIdx = ((cx % 64) + 64) % 64 * 64 + ((cz % 64) + 64) % 64;
-    if (chunkIdx < 0) chunkIdx = 0;
-    if (chunkIdx >= 4096) chunkIdx = 4095;
-
-    for (int z = 0; z < CHUNK_SIZE; ++z) {
-        for (int x = 0; x < CHUNK_SIZE; ++x) {
-            // World coordinates relative to chunk origin
-            float wx = (cx * CHUNK_SIZE) + x + 0.5f;
-            float vz = (cz * CHUNK_SIZE) + z + 0.5f;
-
-            // Simple 2D value noise
-            int xi = (int)floor(wx);
-            int zi = (int)floor(vz);
-            float xf = wx - xi;
-            float zf = vz - zi;
-
-            // Wrap using large primes for noise
-            xi = (xi & 0x7fffffff) ^ (xi >> 13);
-            zi = (zi & 0x7fffffff) ^ (zi >> 13);
-
-            // Hash
-            uint32_t h1 = xi * 61 + zi * 17;
-            uint32_t h2 = xi * 31 + zi * 67;
-
-            // Gradient noise approximation
-            float n1 = (h1 & 0x3fffffff) / 1073741823.0f;
-            float n2 = (h2 & 0x3fffffff) / 1073741823.0f;
-
-            // Cubic fade
-            float fx = 3.0f * xf * xf - 2.0f * xf * xf * xf;
-            float fz = 3.0f * zf * zf - 2.0f * zf * zf * zf;
-            float noiseVal = n1 * (1.0f - fx) + n2 * fx;
-
-            // Height: 0 (bedrock) to 64 (sky)
-            int height = (int)(64.0f * noiseVal);
-            if (height < 0) height = 0;
-            if (height > 64) height = 64;
-
-            // Set blocks from bottom to top
-            for (int y = 0; y <= height; ++y) {
-                if (y == 0) {
-                    // Bedrock at y=0
-                    m_chunks[chunkIdx].SetBlock(x, y, z, BlockType::Bedrock);
-                } else if (y == 1) {
-                    // Dirt
-                    m_chunks[chunkIdx].SetBlock(x, y, z, BlockType::Dirt);
-                } else if (y == height) {
-                    // Grass top
-                    m_chunks[chunkIdx].SetBlock(x, y, z, BlockType::Grass);
-                } else {
-                    // Stone
-                    m_chunks[chunkIdx].SetBlock(x, y, z, BlockType::Stone);
-                }
-            }
-        }
-    }
+    Chunk& chunk = GetOrCreateChunk(cx, cy, cz);
+    chunk.SetBlock(lx, ly, lz, type);
 }
 
 float World::ValueNoise(float x, float z) const {
-    int xi = (int)floor(x);
-    int zi = (int)floor(z);
+    int xi = (int)floorf(x);
+    int zi = (int)floorf(z);
     float xf = x - xi;
     float zf = z - zi;
 
-    xi = (xi & 0x7fffffff);
-    zi = (zi & 0x7fffffff);
+    uint32_t h1 = (uint32_t)(xi * 374761393 + zi * 668265263 + seed_);
+    uint32_t h2 = (uint32_t)((xi+1) * 374761393 + zi * 668265263 + seed_);
+    uint32_t h3 = (uint32_t)(xi * 374761393 + (zi+1) * 668265263 + seed_);
+    uint32_t h4 = (uint32_t)((xi+1) * 374761393 + (zi+1) * 668265263 + seed_);
 
-    uint32_t h1 = xi * 61 + zi * 17;
-    uint32_t h2 = xi * 31 + zi * 67;
+    float n1 = (float)(h1 & 0xFFFF) / 65535.0f;
+    float n2 = (float)(h2 & 0xFFFF) / 65535.0f;
+    float n3 = (float)(h3 & 0xFFFF) / 65535.0f;
+    float n4 = (float)(h4 & 0xFFFF) / 65535.0f;
 
-    float n1 = (h1 & 0x3fffffff) / 1073741823.0f;
-    float n2 = (h2 & 0x3fffffff) / 1073741823.0f;
+    float fx = xf * xf * (3.0f - 2.0f * xf);
+    float fz = zf * zf * (3.0f - 2.0f * zf);
 
-    float fx = 3.0f * xf * xf - 2.0f * xf * xf * xf;
-    float fz = 3.0f * zf * zf - 2.0f * zf * zf * zf;
-    return n1 * (1.0f - fx) + n2 * fx;
+    float a = n1 + fx * (n2 - n1);
+    float b = n3 + fx * (n4 - n3);
+    return a + fz * (b - a);
 }
+
+void World::GenerateChunk(int cx, int cy, int cz) {
+    if (cy != 0) return;
+
+    Chunk& chunk = GetOrCreateChunk(cx, cy, cz);
+
+    for (int z = 0; z < CHUNK_SIZE; ++z) {
+        for (int x = 0; x < CHUNK_SIZE; ++x) {
+            float wx = (float)(cx * CHUNK_SIZE + x) * 0.05f;
+            float wz = (float)(cz * CHUNK_SIZE + z) * 0.05f;
+            float n = ValueNoise(wx, wz);
+            int height = (int)(n * 40.0f) + 10;
+
+            if (height > CHUNK_SIZE) height = CHUNK_SIZE;
+            if (height < 1) height = 1;
+
+            chunk.SetBlock(x, 0, z, BlockType::Bedrock);
+            for (int y = 1; y < height - 1; ++y)
+                chunk.SetBlock(x, y, z, BlockType::Stone);
+            if (height > 1)
+                chunk.SetBlock(x, height - 1, z, BlockType::Dirt);
+            chunk.SetBlock(x, height, z, BlockType::Grass);
+        }
+    }
+    chunk.dirty = false;
+}
+
+void World::GenerateArea(int cx, int cy, int cz, int radius) {
+    for (int dx = -radius; dx <= radius; ++dx)
+        for (int dz = -radius; dz <= radius; ++dz)
+            GenerateChunk(cx + dx, cy, cz + dz);
+}
+
+std::vector<uint64_t> World::GetDirtyChunks() const {
+    std::vector<uint64_t> result;
+    for (auto& pair : chunks_) {
+        if (pair.second.dirty) result.push_back(pair.first);
+    }
+    return result;
+}
+
+void World::ClearDirtyFlags() {
+    for (auto& pair : chunks_) pair.second.dirty = false;
+}   
