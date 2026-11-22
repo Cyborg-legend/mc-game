@@ -33,12 +33,13 @@ jobs:
 
       - name: Download GLEW
         run: |
-          Invoke-WebRequest -Uri "https://github.com/glew/glew/releases/download/2.2.0/glew-2.2.0-win32.zip" -OutFile "glew.zip"
+          Invoke-WebRequest -Uri "https://github.com/nigels-com/glew/releases/download/glew-2.2.0/glew-2.2.0-win32.zip" -OutFile "glew.zip"
           Expand-Archive glew.zip -DestinationPath .
           New-Item -ItemType Directory -Force -Path "glew_deps/include"
           New-Item -ItemType Directory -Force -Path "glew_deps/lib"
           Copy-Item "glew-2.2.0/include/*" "glew_deps/include/" -Recurse -Force
-          Copy-Item "glew-2.2.0/lib/Release/*" "glew_deps/lib/" -Recurse -Force
+          Copy-Item "glew-2.2.0/lib/Release/x64/*" "glew_deps/lib/" -Recurse -Force
+          Copy-Item "glew-2.2.0/bin/Release/x64/*" "glew_deps/lib/" -Recurse -Force
         shell: pwsh
 
       - name: Download GLM
@@ -78,4 +79,4 @@ jobs:
           name: blockforge-windows
           path: |
             build/Release/blockforge.exe
-            build/Release/*.dll
+            build/Release/*.dll   
