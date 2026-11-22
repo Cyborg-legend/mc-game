@@ -7,8 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(glfw3 REQUIRED)
 
 file(GLOB_RECURSE ALL_SOURCES ${CMAKE_SOURCE_DIR}/**/*.cpp)
-list(FILTER ALL_SOURCES EXCLUDE "main\\.cpp$")
-
+list(REMOVE_ITEM ALL_SOURCES ${CMAKE_SOURCE_DIR}/main.cpp)   
 add_library(blockforge_lib STATIC ${ALL_SOURCES})
 
 target_include_directories(blockforge_lib PUBLIC
