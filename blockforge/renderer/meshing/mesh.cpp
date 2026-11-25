@@ -9,16 +9,6 @@ const std::array<std::array<float, 3>, 6> faceNormals = {{
     {{ 0.0f,  0.0f, -1.0f}}
 }};
 
-// UV corners for the four quad vertices, in winding order.
-const std::array<std::array<float, 4>, 6> faceUvCoords = {{
-    {{0.0f, 0.0f, 1.0f, 1.0f}},
-    {{0.0f, 0.0f, 1.0f, 1.0f}},
-    {{0.0f, 0.0f, 1.0f, 1.0f}},
-    {{0.0f, 0.0f, 1.0f, 1.0f}},
-    {{0.0f, 0.0f, 1.0f, 1.0f}},
-    {{0.0f, 0.0f, 1.0f, 1.0f}}
-}};
-
 namespace {
 
 const AtlasTileDef kAtlasTiles[] = {

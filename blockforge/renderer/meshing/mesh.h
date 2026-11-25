@@ -17,13 +17,10 @@ struct Vertex {
 struct MeshChunk {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    uint32_t vertexCount = 0;
-    uint32_t indexCount = 0;
 };
 
 // Face order used everywhere: +X, -X, +Y, -Y, +Z, -Z
 extern const std::array<std::array<float, 3>, 6> faceNormals;
-extern const std::array<std::array<float, 4>, 6> faceUvCoords;
 
 // ---- Procedural texture atlas -------------------------------------------
 // A tile is 16x16 pixels; the atlas is a 16x16 grid of tiles (256x256 px).

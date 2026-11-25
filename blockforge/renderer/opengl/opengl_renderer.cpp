@@ -50,7 +50,6 @@ in vec3 vWorldPos;
 out vec4 FragColor;
 
 uniform sampler2D texAtlas;
-uniform vec3 lightPos;
 uniform vec3 viewPos;
 uniform vec3 ambientColor;
 uniform vec3 lightColor;
@@ -62,12 +61,11 @@ void main() {
     vec4 tex = texture(texAtlas, vUV);
     vec3 base = tex.rgb;
 
-    vec3 n = normalize(vNormal);
-    vec3 l = normalize(lightPos - vWorldPos);
-    float diffuse = max(dot(n, l), 0.0);
-
     // Minecraft-style face shading: tops catch the most light, bottoms the
-    // least, and east/west faces sit between so cubes read as cubes.
+    // least, and east/west faces sit between so cubes read as cubes. This is
+    // the whole lighting model, so a position-based diffuse term would only
+    // duplicate what these constants already say.
+    vec3 n = normalize(vNormal);
     float faceShade = 0.70;
     if (n.y > 0.5) {
         faceShade = 1.0;
@@ -77,7 +75,7 @@ void main() {
         faceShade = 0.82;
     }
 
-    vec3 lit = ambientColor * 0.92 + lightColor * (0.26 + 0.34 * diffuse);
+    vec3 lit = ambientColor * 0.92 + lightColor * 0.55;
     vec3 color = base * faceShade * lit * mix(0.45, 1.0, vAO);
 
     // Distance fog: thin in the Upperworld, thick and red in the Underworld.
@@ -368,7 +366,6 @@ Environment OpenGLRenderer::UpperworldEnvironment() {
     env.fogColor = glm::vec3(0.62f, 0.78f, 0.96f);
     env.ambient = glm::vec3(0.44f, 0.44f, 0.46f);
     env.lightColor = glm::vec3(1.0f, 0.98f, 0.90f);
-    env.lightPosition = glm::vec3(96.0f, 160.0f, 96.0f);
     env.fogStart = 80.0f;
     env.fogDensity = 0.0018f;
     return env;
@@ -380,7 +377,6 @@ Environment OpenGLRenderer::UnderworldEnvironment() {
     env.fogColor = glm::vec3(0.20f, 0.05f, 0.04f);
     env.ambient = glm::vec3(0.34f, 0.16f, 0.14f);
     env.lightColor = glm::vec3(1.0f, 0.52f, 0.22f);
-    env.lightPosition = glm::vec3(0.0f, 24.0f, 0.0f);
     env.fogStart = 22.0f;
     env.fogDensity = 0.0075f;
     return env;
@@ -595,7 +591,6 @@ void OpenGLRenderer::render(const Camera& camera, const std::vector<uint64_t>& v
     glUniformMatrix4fv(glGetUniformLocation(program_, "model"), 1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix4fv(glGetUniformLocation(program_, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(program_, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-    glUniform3fv(glGetUniformLocation(program_, "lightPos"), 1, glm::value_ptr(environment_.lightPosition));
     glUniform3fv(glGetUniformLocation(program_, "viewPos"), 1, glm::value_ptr(camera.position));
     glUniform3fv(glGetUniformLocation(program_, "ambientColor"), 1, glm::value_ptr(environment_.ambient));
     glUniform3fv(glGetUniformLocation(program_, "lightColor"), 1, glm::value_ptr(environment_.lightColor));
@@ -775,8 +770,4 @@ GLuint OpenGLRenderer::generateTextureAtlas() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     return atlas_;
-}
-
-void OpenGLRenderer::setLightPosition(const glm::vec3& pos) {
-    environment_.lightPosition = pos;
 }

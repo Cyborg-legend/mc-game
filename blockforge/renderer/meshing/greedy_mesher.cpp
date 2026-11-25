@@ -91,28 +91,29 @@ MeshChunk GreedyMesher::Mesh(const World& world, const Chunk& chunk) {
                     // Per-corner ambient occlusion, like Minecraft: a vertex
                     // darkens when the blocks beside it and the block across
                     // the corner are filled.
+                    const int axisU = kFaceTangentU[dir];
+                    const int axisV = kFaceTangentV[dir];
+                    int stepU[3] = { 0, 0, 0 };
+                    int stepV[3] = { 0, 0, 0 };
+                    stepU[axisU] = 1;
+                    stepV[axisV] = 1;
+
                     float ao[4];
                     for (int c = 0; c < 4; ++c) {
-                        const int su = kCornerOffsets[dir][c][kFaceTangentU[dir]] * 2 - 1;
-                        const int sv = kCornerOffsets[dir][c][kFaceTangentV[dir]] * 2 - 1;
-
-                        int offsetU[3] = { 0, 0, 0 };
-                        int offsetV[3] = { 0, 0, 0 };
-                        offsetU[kFaceTangentU[dir]] = su;
-                        offsetV[kFaceTangentV[dir]] = sv;
-
+                        const int su = kCornerOffsets[dir][c][axisU] * 2 - 1;
+                        const int sv = kCornerOffsets[dir][c][axisV] * 2 - 1;
                         const bool sideU = Solid(world, chunk,
-                            nx + offsetU[0], ny + offsetU[1], nz + offsetU[2]);
+                            nx + su * stepU[0], ny + su * stepU[1], nz + su * stepU[2]);
                         const bool sideV = Solid(world, chunk,
-                            nx + offsetV[0], ny + offsetV[1], nz + offsetV[2]);
-                        const bool corner = Solid(world, chunk,
-                            nx + offsetU[0] + offsetV[0],
-                            ny + offsetU[1] + offsetV[1],
-                            nz + offsetU[2] + offsetV[2]);
+                            nx + sv * stepV[0], ny + sv * stepV[1], nz + sv * stepV[2]);
+                        const bool diagonal = Solid(world, chunk,
+                            nx + su * stepU[0] + sv * stepV[0],
+                            ny + su * stepU[1] + sv * stepV[1],
+                            nz + su * stepU[2] + sv * stepV[2]);
 
                         const int occlusion = (sideU && sideV)
                             ? 3
-                            : (sideU ? 1 : 0) + (sideV ? 1 : 0) + (corner ? 1 : 0);
+                            : (sideU ? 1 : 0) + (sideV ? 1 : 0) + (diagonal ? 1 : 0);
                         ao[c] = 1.0f - 0.2f * static_cast<float>(occlusion);
                     }
 
@@ -153,7 +154,5 @@ MeshChunk GreedyMesher::Mesh(const World& world, const Chunk& chunk) {
         }
     }
 
-    result.vertexCount = static_cast<uint32_t>(result.vertices.size());
-    result.indexCount = static_cast<uint32_t>(result.indices.size());
     return result;
 }

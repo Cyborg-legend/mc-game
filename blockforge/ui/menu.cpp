@@ -25,6 +25,31 @@ const char* RealmLabel(Dimension dimension) {
 
 } // namespace
 
+bool KeyEdge::Pressed(const InputState& input, int key) const {
+    if (key < 0 || key >= INPUT_KEY_COUNT) {
+        return false;
+    }
+    return input.keys[key] && !previous[key];
+}
+
+void KeyEdge::Sync(const InputState& input) {
+    for (int i = 0; i < INPUT_KEY_COUNT; ++i) {
+        previous[i] = input.keys[i];
+    }
+}
+
+void KeyEdge::Reset() {
+    for (bool& key : previous) {
+        key = false;
+    }
+}
+
+void KeyEdge::Latch(int key) {
+    if (key >= 0 && key < INPUT_KEY_COUNT) {
+        previous[key] = true;
+    }
+}
+
 MainMenu::MainMenu() {
     SyncSeedText();
 }
@@ -33,20 +58,11 @@ void MainMenu::Reset(bool hasSave) {
     screen_ = Screen::Root;
     selection_ = hasSave ? 0 : 1;
     SyncSeedText();
-    for (bool& key : prevKeys_) {
-        key = false;
-    }
+    keys_.Reset();
 }
 
 void MainMenu::SyncSeedText() {
     seedText_ = std::to_string(options_.seed);
-}
-
-bool MainMenu::Pressed(const InputState& input, int key) const {
-    if (key < 0 || key >= INPUT_KEY_COUNT) {
-        return false;
-    }
-    return input.keys[key] && !prevKeys_[key];
 }
 
 uint32_t MainMenu::ParseSeed() const {
@@ -65,13 +81,13 @@ MenuAction MainMenu::Update(const InputState& input, bool hasSave) {
     MenuAction action = MenuAction::None;
 
     if (screen_ == Screen::Root) {
-        if (Pressed(input, GLFW_KEY_UP)) {
+        if (keys_.Pressed(input, GLFW_KEY_UP)) {
             selection_ = (selection_ + 2) % 3;
         }
-        if (Pressed(input, GLFW_KEY_DOWN)) {
+        if (keys_.Pressed(input, GLFW_KEY_DOWN)) {
             selection_ = (selection_ + 1) % 3;
         }
-        if (Pressed(input, GLFW_KEY_ENTER) || Pressed(input, GLFW_KEY_KP_ENTER)) {
+        if (keys_.Pressed(input, GLFW_KEY_ENTER) || keys_.Pressed(input, GLFW_KEY_KP_ENTER)) {
             if (selection_ == 0) {
                 if (hasSave) {
                     action = MenuAction::ContinueGame;
@@ -85,24 +101,24 @@ MenuAction MainMenu::Update(const InputState& input, bool hasSave) {
             }
         }
     } else {
-        if (Pressed(input, GLFW_KEY_UP)) {
+        if (keys_.Pressed(input, GLFW_KEY_UP)) {
             selection_ = (selection_ + 4) % 5;
         }
-        if (Pressed(input, GLFW_KEY_DOWN)) {
+        if (keys_.Pressed(input, GLFW_KEY_DOWN)) {
             selection_ = (selection_ + 1) % 5;
         }
-        if (Pressed(input, GLFW_KEY_ESCAPE)) {
+        if (keys_.Pressed(input, GLFW_KEY_ESCAPE)) {
             screen_ = Screen::Root;
             selection_ = 1;
         }
-        if (Pressed(input, GLFW_KEY_LEFT)) {
+        if (keys_.Pressed(input, GLFW_KEY_LEFT)) {
             if (selection_ == 1) {
                 options_.renderDistance = std::max(3, options_.renderDistance - 1);
             } else if (selection_ == 2) {
                 options_.startingRealm = Dimension::Upperworld;
             }
         }
-        if (Pressed(input, GLFW_KEY_RIGHT)) {
+        if (keys_.Pressed(input, GLFW_KEY_RIGHT)) {
             if (selection_ == 1) {
                 options_.renderDistance = std::min(8, options_.renderDistance + 1);
             } else if (selection_ == 2) {
@@ -111,19 +127,19 @@ MenuAction MainMenu::Update(const InputState& input, bool hasSave) {
         }
         if (selection_ == 0) {
             for (int key = GLFW_KEY_0; key <= GLFW_KEY_9; ++key) {
-                if (Pressed(input, key) && seedText_.size() < 10) {
+                if (keys_.Pressed(input, key) && seedText_.size() < 10) {
                     seedText_.push_back(static_cast<char>('0' + (key - GLFW_KEY_0)));
                 }
             }
-            if (Pressed(input, GLFW_KEY_BACKSPACE) && !seedText_.empty()) {
+            if (keys_.Pressed(input, GLFW_KEY_BACKSPACE) && !seedText_.empty()) {
                 seedText_.pop_back();
             }
-            if (Pressed(input, GLFW_KEY_R)) {
+            if (keys_.Pressed(input, GLFW_KEY_R)) {
                 options_.seed = static_cast<uint32_t>(std::rand()) * 2654435761u + 1013904223u;
                 SyncSeedText();
             }
         }
-        if (Pressed(input, GLFW_KEY_ENTER) || Pressed(input, GLFW_KEY_KP_ENTER)) {
+        if (keys_.Pressed(input, GLFW_KEY_ENTER) || keys_.Pressed(input, GLFW_KEY_KP_ENTER)) {
             if (selection_ == 3) {
                 options_.seed = ParseSeed();
                 action = MenuAction::NewGame;
@@ -134,9 +150,7 @@ MenuAction MainMenu::Update(const InputState& input, bool hasSave) {
         }
     }
 
-    for (int i = 0; i < INPUT_KEY_COUNT; ++i) {
-        prevKeys_[i] = input.keys[i];
-    }
+    keys_.Sync(input);
     return action;
 }
 
@@ -230,34 +244,25 @@ void MainMenu::Draw(UiDrawList& ui, float width, float height, bool hasSave) con
 
 void PauseMenu::Reset() {
     selection_ = 0;
-    for (bool& key : prevKeys_) {
-        key = false;
-    }
+    keys_.Reset();
     // The Escape that opened the pause menu is still held on the next frame;
     // treat it as already down so it does not instantly resume the game.
-    prevKeys_[GLFW_KEY_ESCAPE] = true;
-}
-
-bool PauseMenu::Pressed(const InputState& input, int key) const {
-    if (key < 0 || key >= INPUT_KEY_COUNT) {
-        return false;
-    }
-    return input.keys[key] && !prevKeys_[key];
+    keys_.Latch(GLFW_KEY_ESCAPE);
 }
 
 PauseAction PauseMenu::Update(const InputState& input) {
     PauseAction action = PauseAction::None;
 
-    if (Pressed(input, GLFW_KEY_ESCAPE)) {
+    if (keys_.Pressed(input, GLFW_KEY_ESCAPE)) {
         action = PauseAction::Resume;
     }
-    if (Pressed(input, GLFW_KEY_UP)) {
+    if (keys_.Pressed(input, GLFW_KEY_UP)) {
         selection_ = (selection_ + 2) % 3;
     }
-    if (Pressed(input, GLFW_KEY_DOWN)) {
+    if (keys_.Pressed(input, GLFW_KEY_DOWN)) {
         selection_ = (selection_ + 1) % 3;
     }
-    if (Pressed(input, GLFW_KEY_ENTER) || Pressed(input, GLFW_KEY_KP_ENTER)) {
+    if (keys_.Pressed(input, GLFW_KEY_ENTER) || keys_.Pressed(input, GLFW_KEY_KP_ENTER)) {
         if (selection_ == 0) {
             action = PauseAction::Resume;
         } else if (selection_ == 1) {
@@ -267,9 +272,7 @@ PauseAction PauseMenu::Update(const InputState& input) {
         }
     }
 
-    for (int i = 0; i < INPUT_KEY_COUNT; ++i) {
-        prevKeys_[i] = input.keys[i];
-    }
+    keys_.Sync(input);
     return action;
 }
 

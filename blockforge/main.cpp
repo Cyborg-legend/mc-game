@@ -13,6 +13,7 @@
 #include "core/physics/player.h"
 #include "core/save/save.h"
 #include "core/world/chunk.h"
+#include "core/world/rift_gate.h"
 #include "debug/debug_overlay.h"
 #include "platform/common/iplatform.h"
 #include "renderer/meshing/greedy_mesher.h"
@@ -51,61 +52,6 @@ void RemeshBlock(World& world, OpenGLRenderer& renderer, int worldX, int worldY,
             renderer.uploadChunk(key, GreedyMesher::Mesh(world, it->second));
         }
     }
-}
-
-// Builds the rift gate as an open-air shrine: a paved court with a voidstone
-// frame, a portal surface and glowing corner stones. Returns the court's
-// standing height so the player can be placed in front of it.
-int BuildRiftGate(World& world, int gateX, int gateZ) {
-    int baseY = world.SurfaceY(gateX, gateZ);
-    if (baseY < 3) baseY = 3;
-    const int y = baseY;
-
-    // Paved court. Building upwards keeps the gate visible from the spawn point
-    // instead of tucked into a carved pit you have to walk out of.
-    for (int dz = -7; dz <= 4; ++dz) {
-        for (int dx = -5; dx <= 6; ++dx) {
-            world.SetBlock(gateX + dx, y - 1, gateZ + dz, BlockType::Voidstone);
-            for (int dy = 0; dy <= 6; ++dy) {
-                if (world.GetBlock(gateX + dx, y + dy, gateZ + dz) == BlockType::Bedrock) {
-                    continue;
-                }
-                world.SetBlock(gateX + dx, y + dy, gateZ + dz, BlockType::Air);
-            }
-            // Support the paving on sloped ground so the court never floats.
-            for (int dy = 2; dy <= 4; ++dy) {
-                const int supportY = y - dy;
-                if (supportY < 0) {
-                    continue;
-                }
-                if (world.GetBlock(gateX + dx, supportY, gateZ + dz) == BlockType::Air) {
-                    world.SetBlock(gateX + dx, supportY, gateZ + dz, BlockType::Stone);
-                }
-            }
-        }
-    }
-
-    // Frame.
-    for (int dy = -1; dy <= 3; ++dy) {
-        world.SetBlock(gateX - 1, y + dy, gateZ, BlockType::Voidstone);
-        world.SetBlock(gateX + 2, y + dy, gateZ, BlockType::Voidstone);
-    }
-    for (int dx = -1; dx <= 2; ++dx) {
-        world.SetBlock(gateX + dx, y - 1, gateZ, BlockType::Voidstone);
-        world.SetBlock(gateX + dx, y + 3, gateZ, BlockType::Voidstone);
-    }
-
-    // Rift surface (2 wide, 3 tall).
-    for (int dy = 0; dy < 3; ++dy) {
-        world.SetBlock(gateX, y + dy, gateZ, BlockType::Portal);
-        world.SetBlock(gateX + 1, y + dy, gateZ, BlockType::Portal);
-    }
-
-    // Glowing corner stones make the gate readable in the dark realm.
-    world.SetBlock(gateX - 1, y + 2, gateZ, BlockType::Lumenstone);
-    world.SetBlock(gateX + 2, y + 2, gateZ, BlockType::Lumenstone);
-
-    return y;
 }
 
 bool PlayerInsideRift(const World& world, const Player& player) {
@@ -322,11 +268,12 @@ int main() {
                    " realm=" + DimensionName(world.GetDimension()) +
                    " chunks=" + std::to_string(world.GetChunkCount()));
 
-        // Do not rebuild the gate on load: the save already holds it, and
-        // carving again would erase anything the player built on the court.
+        // The save already holds its gate: BuildRiftGate only adds one when it
+        // is missing (an older save), so loading cannot re-carve the court.
+        const int gateFeetY = BuildRiftGate(world, kGateX, kGateZ);
         int feetY = world.SurfaceY(kSpawnX, kSpawnZ);
-        if (feetY < 2) {
-            feetY = world.SurfaceY(kGateX, kGateZ);
+        if (feetY < gateFeetY) {
+            feetY = gateFeetY;
         }
         uploadWorld();
         placePlayerAtGate(feetY);

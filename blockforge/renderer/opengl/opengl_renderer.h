@@ -30,7 +30,6 @@ struct Environment {
     glm::vec3 fogColor{ 0.62f, 0.78f, 0.96f };
     glm::vec3 ambient{ 0.42f, 0.42f, 0.42f };
     glm::vec3 lightColor{ 1.0f, 0.98f, 0.92f };
-    glm::vec3 lightPosition{ 96.0f, 160.0f, 96.0f };
     float fogStart = 70.0f;
     float fogDensity = 0.0022f;
 };
@@ -64,7 +63,6 @@ public:
     void viewportSize(int& width, int& height) const;
 
     GLuint generateTextureAtlas();
-    void setLightPosition(const glm::vec3& pos);
     void setEnvironment(const Environment& environment);
 
     static Environment UpperworldEnvironment();

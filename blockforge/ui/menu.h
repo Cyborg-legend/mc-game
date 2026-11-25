@@ -21,6 +21,17 @@ enum class MenuAction {
     QuitGame
 };
 
+// Edge-triggered key tracking for menu screens: a key counts once per press,
+// not once per frame it is held.
+struct KeyEdge {
+    bool previous[INPUT_KEY_COUNT]{};
+
+    bool Pressed(const InputState& input, int key) const;
+    void Sync(const InputState& input);
+    void Reset();
+    void Latch(int key);
+};
+
 // Keyboard-driven title screen plus the world creation settings.
 //
 // Root:    Continue World / New World / Quit
@@ -47,9 +58,8 @@ private:
     WorldOptions options_;
     std::string seedText_;
     int selection_ = 0;
-    bool prevKeys_[INPUT_KEY_COUNT]{};
+    KeyEdge keys_;
 
-    bool Pressed(const InputState& input, int key) const;
     uint32_t ParseSeed() const;
     void SyncSeedText();
 };
@@ -71,7 +81,5 @@ public:
 
 private:
     int selection_ = 0;
-    bool prevKeys_[INPUT_KEY_COUNT]{};
-
-    bool Pressed(const InputState& input, int key) const;
+    KeyEdge keys_;
 };
