@@ -1,10 +1,14 @@
 #include "platform/windows/platform.h"
 #include "platform/common/iplatform.h"
+
 #include <GL/glew.h>
-#include <iostream>
-#include <cstring>
-#include <fstream>
+
+#include <windows.h>
+#include <shlobj.h>
+
 #include <filesystem>
+#include <iostream>
+#include <string>
 
 namespace fs = std::filesystem;
 
@@ -13,7 +17,7 @@ WindowsPlatform::~WindowsPlatform() = default;
 
 bool WindowsPlatform::InitWindow(uint32_t width, uint32_t height, const char* title) {
     if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW!" << std::endl;
+        std::cerr << "Failed to initialize GLFW" << std::endl;
         return false;
     }
 
@@ -21,65 +25,80 @@ bool WindowsPlatform::InitWindow(uint32_t width, uint32_t height, const char* ti
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    #ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    #endif
-
-    m_window = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    m_window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), title, nullptr, nullptr);
     if (!m_window) {
-        std::cerr << "Failed to create GLFW window!" << std::endl;
+        std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
         return false;
     }
 
     glfwMakeContextCurrent(m_window);
-    
-    // Initialize GLEW
-    glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK) {
-        std::cerr << "Failed to initialize GLEW!" << std::endl;
-        return false;
+    glfwSetWindowUserPointer(m_window, this);
+    glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(m_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
-    glfwSetWindowTitle(m_window, title);
-    SetWindowTitle(title);
-
-    // Set up input callbacks
-    glfwSetKeyCallback(m_window, [](GLFWwindow* win, int key, int scancode, int action, int mods) {
-        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
-        if (key >= 0 && key < 256) {
-            if (action == GLFW_PRESS) platform->m_inputState.keys[key] = true;
-            else if (action == GLFW_RELEASE) platform->m_inputState.keys[key] = false;
-        }
+    glfwSetKeyCallback(m_window, [](GLFWwindow* win, int key, int, int action, int) {
+        auto* self = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        if (self) self->OnKey(key, action);
     });
-
-    glfwSetCursorPosCallback(m_window, [](GLFWwindow* win, double xpos, double ypos) {
-        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
-        platform->m_inputState.mouseDX = (int16_t)xpos;
-        platform->m_inputState.mouseDY = (int16_t)ypos;
+    glfwSetCursorPosCallback(m_window, [](GLFWwindow* win, double x, double y) {
+        auto* self = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        if (self) self->OnCursor(x, y);
     });
-
-    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* win, int button, int action, int mods) {
-        auto* platform = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
-        if (button >= 0 && button < 5) {
-            if (action == GLFW_PRESS) platform->m_inputState.mouseButtons[button] = true;
-            else if (action == GLFW_RELEASE) platform->m_inputState.mouseButtons[button] = false;
-        }
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* win, int button, int action, int) {
+        auto* self = static_cast<WindowsPlatform*>(glfwGetWindowUserPointer(win));
+        if (self) self->OnMouseButton(button, action);
     });
-
-    glfwSetWindowUserPointer(m_window, this);
-
-    // Set up pointer lock
-    glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     return true;
 }
 
+void WindowsPlatform::OnKey(int key, int action) {
+    if (key < 0 || key >= 256) {
+        return;
+    }
+    if (action == GLFW_PRESS) {
+        m_inputState.keys[key] = true;
+    } else if (action == GLFW_RELEASE) {
+        m_inputState.keys[key] = false;
+    }
+}
+
+void WindowsPlatform::OnCursor(double x, double y) {
+    m_accumMouseDX += static_cast<int32_t>(x - m_lastMouseX);
+    m_accumMouseDY += static_cast<int32_t>(y - m_lastMouseY);
+    m_lastMouseX = x;
+    m_lastMouseY = y;
+}
+
+void WindowsPlatform::OnMouseButton(int button, int action) {
+    if (button < 0 || button >= 5) {
+        return;
+    }
+    if (action == GLFW_PRESS) {
+        m_inputState.mouseButtons[button] = true;
+    } else if (action == GLFW_RELEASE) {
+        m_inputState.mouseButtons[button] = false;
+    }
+}
+
 void WindowsPlatform::PollEvents() {
     glfwPollEvents();
-    // Check if window should close
-    if (glfwWindowShouldClose(m_window)) {
+    if (glfwWindowShouldClose(m_window) || m_inputState.keys[GLFW_KEY_ESCAPE]) {
         m_shouldQuit = true;
+    }
+
+    m_inputState.mouseDX = static_cast<int16_t>(m_accumMouseDX);
+    m_inputState.mouseDY = static_cast<int16_t>(m_accumMouseDY);
+    m_accumMouseDX = 0;
+    m_accumMouseDY = 0;
+}
+
+void WindowsPlatform::SwapBuffers() {
+    if (m_window) {
+        glfwSwapBuffers(m_window);
     }
 }
 
@@ -96,7 +115,11 @@ InputState WindowsPlatform::GetInputState() const {
 }
 
 void WindowsPlatform::SetWindowShouldCloseCallback(bool (*callback)(bool)) {
-    m_closeCallback = callback;
+    (void)callback;
+}
+
+void WindowsPlatform::SetCloseCallback(CloseCallback cb) {
+    m_closeCallback = cb;
 }
 
 void WindowsPlatform::SetWindowTitle(const char* title) {
@@ -116,20 +139,18 @@ void WindowsPlatform::ShutdownWindow() {
 const char* WindowsPlatform::GetSaveDir() const {
     static std::string saveDir;
     if (saveDir.empty()) {
-        // Get APPDATA on Windows
-        char appdata[1024];
-        if (SUCCEEDED(SHGetFolderA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
-            saveDir = std::string(appdata) + "\\blockforge";
+        char appdata[MAX_PATH] = { 0 };
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appdata))) {
+            saveDir = std::string(appdata) + "\\BlockForge";
         } else {
             saveDir = ".blockforge";
         }
-        // Create directory
-        fs::create_directories(saveDir);
+        std::error_code ec;
+        fs::create_directories(saveDir, ec);
     }
     return saveDir.c_str();
 }
 
 void WindowsPlatform::SetWindowIcon(const uint8_t* pixels, uint32_t width, uint32_t height) {
-    // Not implemented for now
     (void)pixels; (void)width; (void)height;
 }

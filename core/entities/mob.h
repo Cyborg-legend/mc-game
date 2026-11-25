@@ -46,4 +46,4 @@ struct Mob {
     float GetX() const { return x; }
     float GetY() const { return y; }
     float GetZ() const { return z; }
-};
+}

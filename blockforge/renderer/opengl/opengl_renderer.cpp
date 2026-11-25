@@ -1,250 +1,372 @@
-#include "opengl_renderer.h"
-#include "meshing/mesh.h"
-#include "core/world/chunk.h"
-#include <glm/glm.hpp>
+#include "opengl/opengl_renderer.h"
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <iostream>
-#include <string>
+#include <vector>
 
-// ============================================================
-// Shader implementation - uses embedded source strings
-// ============================================================
+namespace {
 
-Shader::Shader(const char* vertexSource, const char* fragmentSource)
-    : vertexSource_(vertexSource), fragmentSource_(fragmentSource)
-{
-    unsigned int vertex, fragment;
-    int success;
-    char infoLog[512];
+const char* kVertexShader = R"GLSL(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in float aAO;
 
-    // Compile vertex shader
-    vertex = compileShader(GL_VERTEX_SHADER, std::string(vertexSource_));
-    if (!vertex) {
-        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED" << std::endl;
-        return;
-    }
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
 
-    // Compile fragment shader
-    fragment = compileShader(GL_FRAGMENT_SHADER, std::string(fragmentSource_));
-    if (!fragment) {
-        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED" << std::endl;
-        return;
-    }
+out vec3 vNormal;
+out vec2 vUV;
+out float vAO;
+out vec3 vWorldPos;
 
-    // Link program
-    ID = glCreateProgram();
-    glAttachShader(ID, vertex);
-    glAttachShader(ID, fragment);
-    glLinkProgram(ID);
-
-    glGetProgramiv(ID, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(ID, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-
-    // Delete shaders as they're linked into our program now
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
+void main() {
+    vec4 world = model * vec4(aPos, 1.0);
+    vWorldPos = world.xyz;
+    vNormal = mat3(model) * aNormal;
+    vUV = aUV;
+    vAO = aAO;
+    gl_Position = projection * view * world;
 }
+)GLSL";
 
-Shader::~Shader() {
-    if (ID) glDeleteProgram(ID);
+const char* kFragmentShader = R"GLSL(
+#version 330 core
+in vec3 vNormal;
+in vec2 vUV;
+in float vAO;
+in vec3 vWorldPos;
+
+out vec4 FragColor;
+
+uniform sampler2D texAtlas;
+uniform vec3 lightPos;
+uniform vec3 viewPos;
+uniform vec3 ambientColor;
+uniform vec3 lightColor;
+uniform vec3 fogColor;
+uniform float fogStart;
+uniform float fogDensity;
+
+void main() {
+    vec4 tex = texture(texAtlas, vUV);
+    vec3 base = tex.rgb;
+
+    vec3 n = normalize(vNormal);
+    vec3 l = normalize(lightPos - vWorldPos);
+    float diffuse = max(dot(n, l), 0.0);
+
+    vec3 color = base * (ambientColor + lightColor * diffuse * 0.72) * vAO;
+
+    // Distance fog: thin in the Upperworld, thick and red in the Underworld.
+    float distanceToCamera = length(vWorldPos - viewPos);
+    float fog = clamp((distanceToCamera - fogStart) * fogDensity, 0.0, 1.0);
+    color = mix(color, fogColor, fog);
+
+    FragColor = vec4(color, 1.0);
 }
+)GLSL";
 
-unsigned int Shader::compileShader(unsigned int type, const std::string& source) {
-    unsigned int shader = glCreateShader(type);
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr);
+const char* kUiVertexShader = R"GLSL(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec4 aColor;
+
+uniform vec2 screenSize;
+
+out vec4 vColor;
+
+void main() {
+    vec2 ndc = vec2(aPos.x / screenSize.x * 2.0 - 1.0,
+                    1.0 - aPos.y / screenSize.y * 2.0);
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    vColor = aColor;
+}
+)GLSL";
+
+const char* kUiFragmentShader = R"GLSL(
+#version 330 core
+in vec4 vColor;
+out vec4 FragColor;
+
+void main() {
+    FragColor = vColor;
+}
+)GLSL";
+
+GLuint CompileShader(GLenum type, const char* source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
     glCompileShader(shader);
 
-    int success;
-    char infoLog[512];
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << infoLog << std::endl;
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = { 0 };
+        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+        std::cerr << "Shader compile error: " << log << std::endl;
+        glDeleteShader(shader);
+        return 0;
     }
     return shader;
 }
 
-// ============================================================
-// OpenGLRenderer implementation
-// ============================================================
-
-// Embedded shader source code - vertex shader
-static const char* kVertexShaderSource = "#version 330 core\n"
-// Attributes: position, normal, uv, ao
-"layout(location = 0) in vec3 aPos;\n"
-"layout(location = 1) in vec3 aNormal;\n"
-"layout(location = 2) in vec2 aUV;\n"
-"layout(location = 3) in float aAO;\n"
-// Output to fragment shader
-"out vec3 WorldNormal;\n"
-"out vec2 TexCoords;\n"
-"out float AO;\n"
-// Uniforms
-"uniform mat4 model;\n"
-"uniform mat4 view;\n"
-"uniform mat4 projection;\n"
-"uniform vec3 lightPos;\n"
-"uniform vec3 viewPos;\n"
-// Material
-"uniform float shininess = 32.0;\n"
-"void main()\n"
-"{\n"
-"    gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-// Pass normal and UV to fragment shader
-"    WorldNormal = normalize(mat3(model) * aNormal);\n"
-"    TexCoords = aUV;\n"
-"    AO = aAO;\n"
-"}";
-
-// Embedded shader source code - fragment shader
-static const char* kFragmentShaderSource = "#version 330 core\n"
-// Texture sampling, directional light + ambient, AO modulation
-"in vec3 WorldNormal;\n"
-"in vec2 TexCoords;\n"
-"in float AO;\n"
-// Output
-"out vec4 FragColor;\n"
-// Texture sampler for the 256x256 atlas
-"uniform sampler2D texAtlas;\n"
-// Material
-"uniform vec3 lightPos;\n"
-"uniform vec3 viewPos;\n"
-"uniform float shininess = 32.0;\n"
-// Block type colors (approximate)
-"struct BlockColor {\n"
-"    vec3 ambient;\n"
-"    vec3 diffuse;\n"
-"    vec3 specular;\n"
-"};\n"
-// 16-block color palette
-"const BlockColor blockColors[16] = {\n"
-"    [0] = {vec3(0.0), vec3(0.0), vec3(0.0)},       // Air - invisible\n"
-"    [1] = {vec3(0.1), vec3(0.5, 0.5, 0.5), vec3(0.0)},   // Stone\n"
-"    [2] = {vec3(0.1), vec3(0.6, 0.4, 0.2), vec3(0.0)},   // Dirt\n"
-"    [3] = {vec3(0.1), vec3(0.1, 0.8, 0.1), vec3(0.0)},   // Grass\n"
-"    [4] = {vec3(0.1), vec3(0.5, 0.3, 0.1), vec3(0.1)},   // Wood\n"
-"    [5] = {vec3(0.1), vec3(0.2, 0.7, 0.2), vec3(0.0)},   // Leaves\n"
-"    [6] = {vec3(0.1), vec3(0.8, 0.8, 0.2), vec3(0.0)},   // Sand\n"
-"    [7] = {vec3(0.1), vec3(0.1, 0.5, 0.8), vec3(0.0)},   // Water\n"
-"    [8] = {vec3(0.1), vec3(0.3, 0.3, 0.3), vec3(0.0)},   // Bedrock\n"
-"    [9] = {vec3(0.1), vec3(0.7, 0.6, 0.4), vec3(0.1)},   // Planks\n"
-"    [10] = {vec3(0.1), vec3(0.6, 0.6, 0.6), vec3(0.0)},  // Sticks\n"
-"    [11] = {vec3(0.1), vec3(0.8, 0.6, 0.3), vec3(0.1)},  // CraftingTable\n"
-"    [12] = {vec3(0.1), vec3(0.7, 0.3, 0.3), vec3(0.1)},  // Brick\n"
-"    [13] = {vec3(0.0), vec3(0.0), vec3(0.0)},  // placeholder\n"
-"    [14] = {vec3(0.0), vec3(0.0), vec3(0.0)},  // placeholder\n"
-"    [15] = {vec3(0.0), vec3(0.0), vec3(0.0)}   // Count\n"
-"};\n"
-"void main()\n"
-"{\n"
-// Get block type from texture coordinate (first channel)
-"    vec4 texColor = texture(texAtlas, TexCoords);\n"
-// Use the block type index from RGB
-"    int blockType = int(texColor.r * 15.0); // assuming type index 0-15 packed in r\n"
-// Clamp to valid range
-"    if (blockType < 0) blockType = 0;\n"
-"    if (blockType >= 16) blockType = 15;\n"
-// Get block color
-"    BlockColor bc = blockColors[blockType];\n"
-// Ambient
-"    vec3 ambient = bc.ambient;\n"
-// Diffuse lighting (Lambert)
-"    vec3 normal = normalize(WorldNormal);\n"
-"    vec3 lightDir = normalize(lightPos - viewPos);\n"
-"    float diff = max(dot(normal, lightDir), 0.0);\n"
-"    vec3 diffuse = bc.diffuse * diff;\n"
-// Specular (Blinn-Phong)
-"    vec3 viewDir = normalize(viewPos - vec3(0.0)); // Simplified\n"
-"    float spec = pow(max(dot(viewDir, normal), 0.0), shininess);\n"
-"    vec3 specular = bc.specular * spec;\n"
-// Combine
-"    vec3 result = ambient + diffuse + specular;\n"
-// Apply AO
-"    result *= AO;\n"
-// Water transparency
-"    if (blockType == 7) { // Water\n"
-"        result *= vec3(0.5); // Dim water\n"
-"        FragColor = vec4(result, 0.6); // Semi-transparent\n"
-"    } else {\n"
-"        FragColor = vec4(result, 1.0);\n"
-"    }\n"} ;
-
-Shader::Shader() 
-    : vertexSource_(kVertexShaderSource), fragmentSource_(kFragmentShaderSource)
-{
-    // Initialize with embedded sources
-    unsigned int vertex, fragment;
-    int success;
-    char infoLog[512];
-
-    // Compile vertex shader
-    vertex = compileShader(GL_VERTEX_SHADER, std::string(vertexSource_));
-    if (!vertex) {
-        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED" << std::endl;
-        return;
+GLuint LinkProgram(const char* vertexSource, const char* fragmentSource) {
+    GLuint vs = CompileShader(GL_VERTEX_SHADER, vertexSource);
+    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
     }
 
-    // Compile fragment shader
-    fragment = compileShader(GL_FRAGMENT_SHADER, std::string(fragmentSource_));
-    if (!fragment) {
-        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED" << std::endl;
-        return;
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vs);
+    glAttachShader(program, fs);
+    glLinkProgram(program);
+
+    GLint ok = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = { 0 };
+        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
+        std::cerr << "Program link error: " << log << std::endl;
+        glDeleteProgram(program);
+        program = 0;
     }
 
-    // Link program
-    ID = glCreateProgram();
-    glAttachShader(ID, vertex);
-    glAttachShader(ID, fragment);
-    glLinkProgram(ID);
-
-    glGetProgramiv(ID, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(ID, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-
-    // Delete shaders as they're linked into our program now
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return program;
 }
 
-OpenGLRenderer::OpenGLRenderer()
-    : shader_(kVertexShaderSource, kFragmentShaderSource),
-      vao_(0), vbo_(0), ibo_(0), textureAtlas_(0),
-      lightPos_(0.0f, 20.0f, 0.0f), renderDistance_(16) {}
+// ---- Procedural tile painting -------------------------------------------
+
+uint32_t PixelHash(int tile, int px, int py) {
+    uint32_t h = static_cast<uint32_t>(tile) * 374761393u +
+                 static_cast<uint32_t>(px) * 668265263u +
+                 static_cast<uint32_t>(py) * 2246822519u;
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return h;
+}
+
+float PixelNoise(int tile, int px, int py) {
+    return static_cast<float>(PixelHash(tile, px, py) & 0xFFFFu) / 65535.0f;
+}
+
+unsigned char Clamp255(float v) {
+    if (v < 0.0f) return 0;
+    if (v > 255.0f) return 255;
+    return static_cast<unsigned char>(v);
+}
+
+void PaintTilePixel(const AtlasTileDef& def, int tile, int px, int py, unsigned char out[3]) {
+    const float base[3] = { static_cast<float>(def.r), static_cast<float>(def.g), static_cast<float>(def.b) };
+    const float accent[3] = { static_cast<float>(def.ar), static_cast<float>(def.ag), static_cast<float>(def.ab) };
+    const float n = PixelNoise(tile, px, py);
+    const float cx = static_cast<float>(px) - 7.5f;
+    const float cy = static_cast<float>(py) - 7.5f;
+    const float radius = std::sqrt(cx * cx + cy * cy);
+
+    float shade = 1.0f;
+    float accentMix = 0.0f;
+
+    switch (def.pattern) {
+        case TilePattern::Flat:
+            shade = 0.92f + n * 0.12f;
+            break;
+        case TilePattern::Speckle:
+            shade = 0.84f + n * 0.30f;
+            if (n > 0.93f) shade *= 0.78f;
+            break;
+        case TilePattern::GrassTop:
+            shade = (n > 0.70f) ? 0.78f : (0.94f + n * 0.14f);
+            break;
+        case TilePattern::GrassSide:
+            if (py < 4) {
+                accentMix = 1.0f;
+                shade = 0.92f + n * 0.16f;
+            } else {
+                shade = 0.84f + n * 0.28f;
+            }
+            break;
+        case TilePattern::Bark:
+            shade = 0.80f + 0.22f * std::sin(static_cast<float>(px) * 1.9f + static_cast<float>(tile));
+            if ((px + py * 3) % 7 == 0) shade *= 0.72f;
+            shade += n * 0.08f;
+            break;
+        case TilePattern::Rings:
+            shade = 0.76f + 0.26f * std::sin(radius * 2.1f);
+            break;
+        case TilePattern::Foliage:
+            shade = 0.72f + n * 0.40f;
+            if (n > 0.86f) shade = 0.42f;
+            break;
+        case TilePattern::Liquid:
+            shade = 0.86f + 0.18f * std::sin(static_cast<float>(px) * 0.8f +
+                                            static_cast<float>(py) * 0.5f + n * 1.5f);
+            break;
+        case TilePattern::Chunky: {
+            const int bx = px / 4;
+            const int by = py / 4;
+            shade = 0.80f + 0.26f * PixelNoise(tile + bx * 7, by, 0);
+            if (px % 4 == 0 || py % 4 == 0) shade *= 0.82f;
+            break;
+        }
+        case TilePattern::Planks:
+            shade = 0.92f + n * 0.12f;
+            if (py % 5 == 0 || py == 15) shade = 0.62f;
+            if ((px + (py / 5) * 5) % 8 == 0) shade *= 0.76f;
+            break;
+        case TilePattern::Grid:
+            shade = (px % 6 < 1 || py % 6 < 1) ? 0.55f : (0.90f + n * 0.14f);
+            break;
+        case TilePattern::Brick: {
+            const int row = py / 5;
+            const int offset = (row % 2) * 4;
+            if (py % 5 == 0 || ((px + offset) % 8) == 0) {
+                accentMix = 1.0f;
+                shade = 0.94f;
+            } else {
+                shade = 0.86f + n * 0.20f;
+            }
+            break;
+        }
+        case TilePattern::Ore:
+            shade = 0.82f + n * 0.26f;
+            if (radius < 3.4f + n * 2.0f) {
+                accentMix = 1.0f;
+                shade = 0.95f + n * 0.18f;
+            }
+            break;
+        case TilePattern::Glow:
+            shade = 1.18f - radius * 0.045f + n * 0.10f;
+            if (radius < 2.6f) accentMix = 0.7f;
+            break;
+        case TilePattern::Swirl: {
+            const float wave = std::sin((static_cast<float>(px) + static_cast<float>(py)) * 0.9f + n * 2.2f);
+            accentMix = (wave > 0.15f) ? 1.0f : 0.0f;
+            shade = 0.92f + n * 0.12f;
+            break;
+        }
+        case TilePattern::Crystal: {
+            const int band = (px + py * 2) % 11;
+            if (band < 3) {
+                accentMix = 0.55f;
+                shade = 1.22f;
+            } else if (band < 6) {
+                shade = 0.74f;
+            } else {
+                shade = 0.96f + n * 0.08f;
+            }
+            break;
+        }
+        case TilePattern::Ash:
+            shade = 0.90f + n * 0.16f;
+            if (n > 0.93f) shade = 0.62f;
+            break;
+        case TilePattern::Unused:
+            shade = 0.0f;
+            break;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        const float value = base[i] * shade + (accent[i] * shade - base[i] * shade) * accentMix;
+        out[i] = Clamp255(value);
+    }
+}
+
+// A UI vertex is position (2 floats) plus colour (4 floats).
+void PushQuad(std::vector<float>& out,
+              float x, float y, float w, float h,
+              float r, float g, float b, float a) {
+    const float x0 = x;
+    const float y0 = y;
+    const float x1 = x + w;
+    const float y1 = y + h;
+    const float verts[6][6] = {
+        { x0, y0, r, g, b, a },
+        { x1, y0, r, g, b, a },
+        { x1, y1, r, g, b, a },
+        { x0, y0, r, g, b, a },
+        { x1, y1, r, g, b, a },
+        { x0, y1, r, g, b, a },
+    };
+    for (const auto& v : verts) {
+        out.insert(out.end(), v, v + 6);
+    }
+}
+
+} // namespace
+
+glm::vec3 Camera::Front() const {
+    return glm::normalize(glm::vec3(
+        std::cos(pitch) * std::cos(yaw),
+        std::sin(pitch),
+        std::cos(pitch) * std::sin(yaw)));
+}
+
+void Camera::Look(float dxPixels, float dyPixels, float sensitivity) {
+    yaw += dxPixels * sensitivity;
+    pitch -= dyPixels * sensitivity;
+    const float limit = 1.55f;
+    if (pitch > limit) pitch = limit;
+    if (pitch < -limit) pitch = -limit;
+}
+
+glm::mat4 Camera::GetViewMatrix() const {
+    return glm::lookAt(position, position + Front(), glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+glm::mat4 Camera::GetProjectionMatrix() const {
+    return glm::perspective(glm::radians(fovDegrees), aspect, nearPlane, farPlane);
+}
+
+Environment OpenGLRenderer::UpperworldEnvironment() {
+    Environment env;
+    env.sky = glm::vec3(0.52f, 0.72f, 0.95f);
+    env.fogColor = glm::vec3(0.62f, 0.78f, 0.96f);
+    env.ambient = glm::vec3(0.44f, 0.44f, 0.46f);
+    env.lightColor = glm::vec3(1.0f, 0.98f, 0.90f);
+    env.lightPosition = glm::vec3(96.0f, 160.0f, 96.0f);
+    env.fogStart = 80.0f;
+    env.fogDensity = 0.0018f;
+    return env;
+}
+
+Environment OpenGLRenderer::UnderworldEnvironment() {
+    Environment env;
+    env.sky = glm::vec3(0.10f, 0.03f, 0.03f);
+    env.fogColor = glm::vec3(0.20f, 0.05f, 0.04f);
+    env.ambient = glm::vec3(0.34f, 0.16f, 0.14f);
+    env.lightColor = glm::vec3(1.0f, 0.52f, 0.22f);
+    env.lightPosition = glm::vec3(0.0f, 24.0f, 0.0f);
+    env.fogStart = 22.0f;
+    env.fogDensity = 0.0075f;
+    return env;
+}
 
 OpenGLRenderer::~OpenGLRenderer() {
-    if (vao_) glDeleteVertexArrays(1, &vao_);
-    if (vbo_) glDeleteBuffers(1, &vbo_);
-    if (ibo_) glDeleteBuffers(1, &ibo_);
+    shutdown();
 }
 
-bool OpenGLRenderer::init() {
-    // GLEW is initialized elsewhere (in main.cpp), just ensure we can use it
-    // Check OpenGL version
-    const char* glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    std::cout << "OpenGL Version: " << glVersion << std::endl;
-    const char* glslVersion = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
-    std::cout << "GLSL Version: " << glslVersion << std::endl;
+bool OpenGLRenderer::compileShaders() {
+    program_ = LinkProgram(kVertexShader, kFragmentShader);
+    return program_ != 0;
+}
 
-    // Enable depth testing
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-
-    // Enable cull face
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    // Setup VAO/VBO for chunk meshes
-    initMeshBuffers();
-
-    // Set light position
-    shader_.setVec3("lightPos", lightPos_.x, lightPos_.y, lightPos_.z);
-
-    return true;
+bool OpenGLRenderer::compileUiShaders() {
+    uiProgram_ = LinkProgram(kUiVertexShader, kUiFragmentShader);
+    return uiProgram_ != 0;
 }
 
 void OpenGLRenderer::initMeshBuffers() {
@@ -253,172 +375,278 @@ void OpenGLRenderer::initMeshBuffers() {
     glGenBuffers(1, &ibo_);
 
     glBindVertexArray(vao_);
-
-    // Vertex buffer
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-
-    // Index buffer
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
 
-    // Vertex attribute pointers (setup once, data updated per chunk)
-    // Position (3 floats)
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-
-    // Normal (3 floats)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, pos)));
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
-
-    // UV (2 floats)
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, uv));
-
-    // AO (1 float)
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, uv)));
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, ao));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, ao)));
 
     glBindVertexArray(0);
 }
 
-void OpenGLRenderer::uploadChunk(uint64_t id, const MeshChunk& mesh) {
+void OpenGLRenderer::initUiBuffers() {
+    glGenVertexArrays(1, &uiVao_);
+    glGenBuffers(1, &uiVbo_);
+
+    glBindVertexArray(uiVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                          reinterpret_cast<void*>(2 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+bool OpenGLRenderer::init() {
+    if (glewInit() != GLEW_OK) {
+        std::cerr << "Failed to initialize GLEW" << std::endl;
+        return false;
+    }
+
+    const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    std::cout << "OpenGL " << (version ? version : "unknown") << std::endl;
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
+    if (!compileShaders() || !compileUiShaders()) {
+        return false;
+    }
+
+    initMeshBuffers();
+    initUiBuffers();
+    generateTextureAtlas();
+
+    environment_ = UpperworldEnvironment();
+    return true;
+}
+
+void OpenGLRenderer::shutdown() {
+    if (vbo_) { glDeleteBuffers(1, &vbo_); vbo_ = 0; }
+    if (ibo_) { glDeleteBuffers(1, &ibo_); ibo_ = 0; }
+    if (vao_) { glDeleteVertexArrays(1, &vao_); vao_ = 0; }
+    if (uiVbo_) { glDeleteBuffers(1, &uiVbo_); uiVbo_ = 0; }
+    if (uiVao_) { glDeleteVertexArrays(1, &uiVao_); uiVao_ = 0; }
+    if (atlas_) { glDeleteTextures(1, &atlas_); atlas_ = 0; }
+    if (program_) { glDeleteProgram(program_); program_ = 0; }
+    if (uiProgram_) { glDeleteProgram(uiProgram_); uiProgram_ = 0; }
+    uploadedChunks_.clear();
+}
+
+bool OpenGLRenderer::uploadChunk(uint64_t id, const MeshChunk& mesh) {
     uploadedChunks_[id] = mesh;
-
-    if (mesh.vertices.empty() || mesh.indices.empty()) return;
-
-    // Update VBO with mesh data
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER,
-        mesh.vertices.size() * sizeof(Vertex),
-        mesh.vertices.data(),
-        GL_DYNAMIC_DRAW);
-
-    // Update IBO with index data
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-        mesh.indices.size() * sizeof(uint32_t),
-        mesh.indices.data(),
-        GL_DYNAMIC_DRAW);
+    return true;
 }
 
 void OpenGLRenderer::destroyChunk(uint64_t id) {
     uploadedChunks_.erase(id);
-    // No explicit GPU cleanup needed - VAO/VBO are shared
 }
 
-bool OpenGLRenderer::isChunkVisible(uint64_t chunkKey, const Camera& cam) {
-    // Unpack chunk coordinates
-    int cx, cy, cz;
-    // World::UnpackCoords(chunkKey, cx, cy, cz); // Simplified
-
-    // Chunk AABB: 16×16×16 blocks, each block is 1 unit
-    // For now, use a simple distance check
-    // In a full implementation, this would be a 6-plane frustum test
-
-    // Get chunk center (assuming chunk 0,0,0 for simplicity)
-    float cxf = 8.0f; // chunk center X
-    float cyf = 8.0f; // chunk center Y
-    float czf = 8.0f; // chunk center Z
-
-    // Distance from camera to chunk center
-    float dx = cxf - cam.position.x;
-    float dy = cyf - cam.position.y;
-    float dz = czf - cam.position.z;
-    float distSq = dx * dx + dy * dy + dz * dz;
-
-    // Simple distance-based culling
-    // Visible if within render distance
-    float maxDist = renderDistance_ * 16.0f + 8.0f;
-    return distSq < maxDist * maxDist;
+void OpenGLRenderer::clearChunks() {
+    uploadedChunks_.clear();
 }
 
-void OpenGLRenderer::render(const Camera& cam, const std::vector<uint64_t>& visibleChunks) {
-    if (!shader_.ID) {
-        std::cerr << "Shader not initialized!" << std::endl;
+void OpenGLRenderer::setEnvironment(const Environment& environment) {
+    environment_ = environment;
+}
+
+void OpenGLRenderer::drawMesh(const MeshChunk& mesh) {
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
         return;
     }
 
-    shader_.use();
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(mesh.vertices.size() * sizeof(Vertex)),
+        mesh.vertices.data(),
+        GL_STREAM_DRAW);
 
-    // Set projection matrix
-    shader_.setMat4("projection", cam.projection);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(uint32_t)),
+        mesh.indices.data(),
+        GL_STREAM_DRAW);
 
-    // Set view matrix
-    shader_.setMat4("view", cam.getViewMatrix());
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indices.size()), GL_UNSIGNED_INT, nullptr);
+    ++drawCalls_;
+}
 
-    // Set camera position
-    shader_.setVec3("viewPos", cam.position.x, cam.position.y, cam.position.z);
+void OpenGLRenderer::render(const Camera& camera, const std::vector<uint64_t>& visibleChunks) {
+    drawCalls_ = 0;
 
-    // Set light position
-    shader_.setVec3("lightPos", lightPos_.x, lightPos_.y, lightPos_.z);
+    glClearColor(environment_.sky.r, environment_.sky.g, environment_.sky.b, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Set render distance uniform
-    shader_.setInt("renderDistance", renderDistance_);
-
-    // Bind VAO
-    glBindVertexArray(vao_);
-
-    // Render each visible chunk
-    for (uint64_t chunkKey : visibleChunks) {
-        auto it = uploadedChunks_.find(chunkKey);
-        if (it == uploadedChunks_.end()) continue;
-
-        const MeshChunk& mesh = it->second;
-
-        if (mesh.vertices.empty() || mesh.indices.empty()) continue;
-
-        // Update VBO/IBO with current chunk data
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-            mesh.vertices.size() * sizeof(Vertex),
-            mesh.vertices.data(),
-            GL_DYNAMIC_DRAW);
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-            mesh.indices.size() * sizeof(uint32_t),
-            mesh.indices.data(),
-            GL_DYNAMIC_DRAW);
-
-        // Draw the chunk
-        glDrawElements(GL_TRIANGLES,
-            mesh.indexCount,
-            GL_UNSIGNED_INT,
-            0);
+    if (!program_) {
+        return;
     }
 
-    // Unbind
+    glUseProgram(program_);
+
+    const glm::mat4 model(1.0f);
+    const glm::mat4 view = camera.GetViewMatrix();
+    const glm::mat4 projection = camera.GetProjectionMatrix();
+
+    glUniformMatrix4fv(glGetUniformLocation(program_, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(program_, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(program_, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniform3fv(glGetUniformLocation(program_, "lightPos"), 1, glm::value_ptr(environment_.lightPosition));
+    glUniform3fv(glGetUniformLocation(program_, "viewPos"), 1, glm::value_ptr(camera.position));
+    glUniform3fv(glGetUniformLocation(program_, "ambientColor"), 1, glm::value_ptr(environment_.ambient));
+    glUniform3fv(glGetUniformLocation(program_, "lightColor"), 1, glm::value_ptr(environment_.lightColor));
+    glUniform3fv(glGetUniformLocation(program_, "fogColor"), 1, glm::value_ptr(environment_.fogColor));
+    glUniform1f(glGetUniformLocation(program_, "fogStart"), environment_.fogStart);
+    glUniform1f(glGetUniformLocation(program_, "fogDensity"), environment_.fogDensity);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlas_);
+    glUniform1i(glGetUniformLocation(program_, "texAtlas"), 0);
+
+    glBindVertexArray(vao_);
+    for (uint64_t key : visibleChunks) {
+        auto it = uploadedChunks_.find(key);
+        if (it != uploadedChunks_.end()) {
+            drawMesh(it->second);
+        }
+    }
     glBindVertexArray(0);
 }
 
-void OpenGLRenderer::setTextureAtlas(GLuint atlas) {
-    textureAtlas_ = atlas;
+void OpenGLRenderer::renderHud(const HudState& hud) {
+    if (!uiProgram_) {
+        return;
+    }
+
+    GLint viewport[4] = { 0, 0, 1280, 720 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const float width = static_cast<float>(viewport[2] > 0 ? viewport[2] : 1280);
+    const float height = static_cast<float>(viewport[3] > 0 ? viewport[3] : 720);
+
+    std::vector<float> vertices;
+    vertices.reserve(6 * 6 * 48);
+
+    // Crosshair.
+    const float cx = width * 0.5f;
+    const float cy = height * 0.5f;
+    PushQuad(vertices, cx - 10.0f, cy - 1.0f, 20.0f, 2.0f, 1.0f, 1.0f, 1.0f, 0.85f);
+    PushQuad(vertices, cx - 1.0f, cy - 10.0f, 2.0f, 20.0f, 1.0f, 1.0f, 1.0f, 0.85f);
+
+    // Hotbar.
+    constexpr int kSlots = 9;
+    const float slot = 44.0f;
+    const float gap = 4.0f;
+    const float totalWidth = kSlots * slot + (kSlots - 1) * gap;
+    const float barX = (width - totalWidth) * 0.5f;
+    const float barY = height - slot - 18.0f;
+
+    for (int i = 0; i < kSlots; ++i) {
+        const float x = barX + static_cast<float>(i) * (slot + gap);
+        const bool selected = (i == hud.selectedSlot);
+
+        if (selected) {
+            PushQuad(vertices, x - 3.0f, barY - 3.0f, slot + 6.0f, slot + 6.0f, 1.0f, 1.0f, 1.0f, 0.95f);
+        } else {
+            PushQuad(vertices, x - 3.0f, barY - 3.0f, slot + 6.0f, slot + 6.0f, 0.20f, 0.20f, 0.24f, 0.80f);
+        }
+        PushQuad(vertices, x, barY, slot, slot, 0.04f, 0.04f, 0.05f, 0.85f);
+
+        float color[3] = { 0.1f, 0.1f, 0.1f };
+        BlockColor(static_cast<BlockType>(hud.hotbar[i]), color);
+        PushQuad(vertices, x + 5.0f, barY + 5.0f, slot - 10.0f, slot - 10.0f,
+                 color[0], color[1], color[2], 0.95f);
+    }
+
+    // Health bar.
+    const int hearts = 10;
+    const int maxHealth = (hud.maxHealth > 0) ? hud.maxHealth : 20;
+    for (int i = 0; i < hearts; ++i) {
+        const bool full = hud.health > i * (maxHealth / hearts);
+        const float r = full ? 0.86f : 0.28f;
+        const float g = full ? 0.16f : 0.12f;
+        const float b = full ? 0.20f : 0.14f;
+        PushQuad(vertices, 20.0f + static_cast<float>(i) * 22.0f, height - 44.0f,
+                 16.0f, 16.0f, r, g, b, 0.95f);
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(uiProgram_);
+    glUniform2f(glGetUniformLocation(uiProgram_, "screenSize"), width, height);
+
+    glBindVertexArray(uiVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
+                 vertices.data(), GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size() / 6));
+    glBindVertexArray(0);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+}
+
+GLuint OpenGLRenderer::generateTextureAtlas() {
+    constexpr int kAtlasSize = 256;
+    constexpr int kTile = 16;
+    static unsigned char pixels[kAtlasSize * kAtlasSize * 4];
+
+    for (int i = 0; i < kAtlasSize * kAtlasSize; ++i) {
+        pixels[i * 4 + 0] = 0;
+        pixels[i * 4 + 1] = 0;
+        pixels[i * 4 + 2] = 0;
+        pixels[i * 4 + 3] = 255;
+    }
+
+    const int tileCount = AtlasTileCount();
+    for (int tile = 0; tile < tileCount; ++tile) {
+        const AtlasTileDef& def = GetAtlasTile(tile);
+        if (def.pattern == TilePattern::Unused) {
+            continue;
+        }
+
+        const int originX = (tile % 16) * kTile;
+        const int originY = (tile / 16) * kTile;
+
+        for (int py = 0; py < kTile; ++py) {
+            for (int px = 0; px < kTile; ++px) {
+                unsigned char rgb[3] = { 0, 0, 0 };
+                PaintTilePixel(def, tile, px, py, rgb);
+                unsigned char* p = &pixels[((originY + py) * kAtlasSize + (originX + px)) * 4];
+                p[0] = rgb[0];
+                p[1] = rgb[1];
+                p[2] = rgb[2];
+                p[3] = 255;
+            }
+        }
+    }
+
+    if (!atlas_) {
+        glGenTextures(1, &atlas_);
+    }
+    glBindTexture(GL_TEXTURE_2D, atlas_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kAtlasSize, kAtlasSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    return atlas_;
 }
 
 void OpenGLRenderer::setLightPosition(const glm::vec3& pos) {
-    lightPos_ = pos;
-    shader_.setVec3("lightPos", pos.x, pos.y, pos.z);
-}
-
-void OpenGLRenderer::updateRenderDistance(float frameTime) {
-    renderDistanceTimer_ += static_cast<int>(frameTime * 1000.0f); // Convert to ms
-
-    if (renderDistanceTimer_ >= 10000) { // 10 seconds
-        // Check average frame time - if < 16ms, increase; if > 33ms, decrease
-        if (lastFrameTime_ < 16.0f / 1000.0f) {
-            // Increase render distance
-            if (renderDistance_ < 64) {
-                renderDistance_ += 2;
-            }
-        }
-        else if (lastFrameTime_ > 33.0f / 1000.0f) {
-            // Decrease render distance
-            if (renderDistance_ > 8) {
-                renderDistance_ -= 2;
-            }
-        }
-        renderDistanceTimer_ = 0;
-    }
-    // Clamp range: 8-64
-    if (renderDistance_ < 8) renderDistance_ = 8;
-    if (renderDistance_ > 64) renderDistance_ = 64;
+    environment_.lightPosition = pos;
 }

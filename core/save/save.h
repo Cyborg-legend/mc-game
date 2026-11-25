@@ -35,20 +35,21 @@ struct SaveSlot {
     std::vector<EntitySaveData> entities;
     World world; // The world state
     GameSettings settings;
+};
 
 // Player inventory in save format (36 slots, each: 1 byte type + 1 byte count)
-    std::array<uint8_t, 72> inventory; // 36 * (type + count)
+std::array<uint8_t, 72> inventory; // 36 * (type + count)
 
 // Constructor
-    SaveSlot() : seed(0) {
-        inventory.fill(0);
-    }
+SaveSlot() : seed(0) {
+    inventory.fill(0);
+}
 
 // Save entire slot to file
-    bool SaveToFile(const std::string& path) const;
+bool SaveToFile(const std::string& path) const;
 
 // Load entire slot from file
-    bool LoadFromFile(const std::string& path);
+bool LoadFromFile(const std::string& path);
 };
 
 // Main menu state

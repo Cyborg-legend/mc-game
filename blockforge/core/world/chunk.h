@@ -1,12 +1,16 @@
 #pragma once
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <unordered_map>
+#include <vector>
 
-// BlockType enum matching spec: Air, Stone, Dirt, Grass, Wood, Leaves, Sand, Water, Bedrock, Planks, Sticks, CraftingTable, Brick (14 types)
+// Block palette. All artwork for these blocks is generated procedurally at
+// runtime (see OpenGLRenderer::generateTextureAtlas), so the game ships with its
+// own original textures.
 enum class BlockType : uint8_t {
     Air = 0,
+    // Upperworld materials
     Stone,
     Dirt,
     Grass,
@@ -19,79 +23,133 @@ enum class BlockType : uint8_t {
     Sticks,
     CraftingTable,
     Brick,
-    // Keep last for array sizing - max 16 types
-    Count = 16
+    // Underworld materials
+    Emberstone,
+    Ashsoil,
+    Lumenstone,
+    Magma,
+    Voidstone,
+    Cinderbrick,
+    PaleQuartz,
+    CrimsonWood,
+    Bloodleaves,
+    Emberlode,
+    Ironlode,
+    Portal,
+    Glowmoss,
+    Cinderstone,
+    Ashblock,
+    Count
 };
 
-// Static assertion to ensure we don't exceed 16 block types
-static_assert(static_cast<uint8_t>(BlockType::Count) <= 16, "BlockType count must not exceed 16");
+static_assert(static_cast<uint8_t>(BlockType::Count) <= 64,
+              "BlockType count must fit inside the 16x16 tile atlas");
 
-// Chunk: 16×16×16 blocks
+// The two playable realms.
+enum class Dimension : uint8_t {
+    Upperworld = 0,
+    Underworld = 1,
+    Count
+};
+
+inline const char* DimensionName(Dimension dimension) {
+    switch (dimension) {
+        case Dimension::Underworld: return "Underworld";
+        case Dimension::Upperworld: return "Upperworld";
+        default: return "Unknown";
+    }
+}
+
+// Vertical generation limits (kept in the header so spawning code can use them).
+static constexpr int UPPERWORLD_TOP = 96;      // upperworld is generated for y in [0, 96)
+static constexpr int UNDERWORLD_CEILING = 120; // bedrock roof of the underworld starts here
+static constexpr int UNDERWORLD_TOP = 128;     // underworld is generated for y in [0, 128)
+static constexpr int SEA_LEVEL = 34;
+
+// Collision / rendering classification shared by physics, meshing and the HUD.
+inline bool IsLiquid(BlockType type) { return type == BlockType::Water; }
+inline bool IsPortal(BlockType type) { return type == BlockType::Portal; }
+inline bool IsCollidable(BlockType type) {
+    return type != BlockType::Air && !IsLiquid(type) && !IsPortal(type);
+}
+// Opaque blocks hide the neighbouring face. Leaves stay fully opaque so the
+// renderer never needs alpha sorting.
+inline bool IsOpaque(BlockType type) { return IsCollidable(type); }
+inline bool EmitsLight(BlockType type) {
+    return type == BlockType::Portal || type == BlockType::Lumenstone ||
+           type == BlockType::Magma || type == BlockType::Glowmoss;
+}
+inline bool IsBreakable(BlockType type) {
+    return type != BlockType::Air && type != BlockType::Bedrock;
+}
+
+// Chunk: 16x16x16 blocks.
 static constexpr int CHUNK_SIZE = 16;
 static constexpr int CHUNK_VOLUME = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE; // 4096
 
 using BlockId = uint8_t;
 
 struct Chunk {
-    BlockId blocks[CHUNK_VOLUME]; // uint8_t blocks[16*16*16]
+    BlockId blocks[CHUNK_VOLUME];
 
-    // Chunk coordinates
-    int cx, cy, cz; // chunk grid coordinates
+    // Chunk grid coordinates.
+    int cx, cy, cz;
 
-    // Construct chunk at given coordinates
-    Chunk(int cx = 0, int cy = 0, int cz = 0) : cx(cx), cy(cy), cz(cz) {
-        // Initialize all blocks to Air
-        for (int i = 0; i < CHUNK_VOLUME; ++i) {
-            blocks[i] = static_cast<BlockId>(BlockType::Air);
-        }
-    }
+    explicit Chunk(int cx = 0, int cy = 0, int cz = 0);
 
-    // Get block type at local position (x,y,z within chunk)
-    BlockType GetBlock(int x, int y, int z) const {
-        if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
-            return BlockType::Air; // Out of bounds
-        }
-        return static_cast<BlockType>(blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x]);
-    }
-
-    // Set block type (marks chunk modified)
-    void SetBlock(int x, int y, int z, BlockType type) {
-        if (x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE) {
-            blocks[y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x] = static_cast<BlockId>(type);
-        }
-    }
+    BlockType GetBlock(int x, int y, int z) const;
+    void SetBlock(int x, int y, int z, BlockType type);
+    bool IsSolid(int x, int y, int z) const;
 };
 
-// World class for chunk management
+// World: sparse chunk storage, world-space block access and terrain generation
+// for both the Upperworld and the Underworld.
 class World {
 public:
     World();
-    ~World() = default;
 
-    // Get chunk by coordinates, creates if not exists
-    Chunk& GetOrCreateChunk(int x, int y, int z);
-
-    // Get block at world position
+    Chunk& GetOrCreateChunk(int cx, int cy, int cz);
     BlockType GetBlock(int x, int y, int z) const;
-
-    // Set block at world position
     void SetBlock(int x, int y, int z, BlockType type);
 
-    // Generate terrain chunk using 2D value noise
-    // x,z = chunk coordinates, y ranges from bedrock (y=0) to sky (y=64)
+    // Generate the terrain column (X/Z chunk coords) for the active dimension.
     void GenerateChunk(int cx, int cz);
 
-    // Get all chunks (for iteration)
+    // Generate terrain in a square radius around the origin.
+    void GenerateChunks(int radiusInChunks = 6);
+
+    // Generate terrain in a square radius around a chunk column.
+    void GenerateChunksAround(int centerCX, int centerCZ, int radiusInChunks = 6);
+
+    // Drop every generated chunk (used when travelling between dimensions).
+    void Clear();
+
+    Dimension GetDimension() const { return m_dimension; }
+    void SetDimension(Dimension dimension) { m_dimension = dimension; }
+
+    uint64_t GetSeed() const { return m_seed; }
+    void SetSeed(uint64_t seed) { m_seed = seed; }
+
+    // First open standing position (feet) above the terrain at column x/z.
+    int SurfaceY(int x, int z) const;
+
     size_t GetChunkCount() const;
+    const std::unordered_map<uint64_t, Chunk>& GetChunks() const { return m_chunks; }
+
+    static uint64_t PackKey(int cx, int cy, int cz);
+    static void UnpackKey(uint64_t key, int& cx, int& cy, int& cz);
 
 private:
-    // Use unordered_map instead of std::array to avoid 16MB stack allocation
-    // Only stores chunks that are actually used
     std::unordered_map<uint64_t, Chunk> m_chunks;
+    Dimension m_dimension = Dimension::Upperworld;
+    uint64_t m_seed = 1337;
 
-    // Simple 2D value noise
-    float ValueNoise(float x, float z) const;
+    int ColumnTop() const;
+    float ColumnHeight(int wx, int wz) const;
+    bool CaveAt(int wx, int wy, int wz) const;
 
-    // Pack chunk coordinates into key
-    uint32_t PackKey(int cx, int cy, int cz) const;
+    void GenerateUpperworldColumn(int cx, int cz);
+    void GenerateUnderworldColumn(int cx, int cz);
+    void DecorateChunk(int cx, int cz);
+    void DecorateUpperworldColumn(int cx, int cz);
 };

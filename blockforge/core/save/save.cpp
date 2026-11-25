@@ -1,110 +1,154 @@
-#include "save.h"
-#include <fstream>
+#include "core/save/save.h"
 
-// ============================================================
-// SaveSlot implementation
-// ============================================================
+#include <nlohmann/json.hpp>
+
+#include <fstream>
+#include <iostream>
+
+SaveSlot::SaveSlot() {
+    inventory.fill(static_cast<uint8_t>(BlockType::Air));
+}
 
 bool SaveSlot::SaveToFile(const std::string& path) const {
     std::ofstream file(path, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "Failed to save game to: " << path << std::endl;
+        std::cerr << "Failed to open save file for writing: " << path << std::endl;
         return false;
     }
 
-    // Write magic
     file.write(reinterpret_cast<const char*>(&SAVE_MAGIC), sizeof(SAVE_MAGIC));
-    // Write version
     file.write(reinterpret_cast<const char*>(&SAVE_VERSION), sizeof(SAVE_VERSION));
-    // Write seed
     file.write(reinterpret_cast<const char*>(&seed), sizeof(seed));
-    // Write chunk count
-    uint32_t chunkCount = static_cast<uint32_t>(chunks.size());
+    const uint8_t dimension = static_cast<uint8_t>(world.GetDimension());
+    file.write(reinterpret_cast<const char*>(&dimension), sizeof(dimension));
+
+    const uint32_t chunkCount = static_cast<uint32_t>(world.GetChunks().size());
     file.write(reinterpret_cast<const char*>(&chunkCount), sizeof(chunkCount));
-    // Write chunk data
-    for (const auto& chunk : chunks) {
-        file.write(reinterpret_cast<const char*>(&chunk.id), sizeof(chunk.id));
-        uint8_t dirty = chunk.dirty ? 1 : 0;
-        file.write(reinterpret_cast<const char*>(&dirty), sizeof(dirty));
-        file.write(reinterpret_cast<const char*>(chunk.blockData.data()), chunk.blockData.size());
+    for (const auto& entry : world.GetChunks()) {
+        const uint64_t id = entry.first;
+        const Chunk& chunk = entry.second;
+        file.write(reinterpret_cast<const char*>(&id), sizeof(id));
+        file.write(reinterpret_cast<const char*>(chunk.blocks), CHUNK_VOLUME);
     }
-    // Write entity count
-    uint32_t entityCount = static_cast<uint32_t>(entities.size());
+
+    const uint32_t entityCount = static_cast<uint32_t>(entities.size());
     file.write(reinterpret_cast<const char*>(&entityCount), sizeof(entityCount));
-    // Write entity data
-    for (const auto& entity : entities) {
+    for (const EntitySaveData& entity : entities) {
         file.write(reinterpret_cast<const char*>(&entity.type), sizeof(entity.type));
         file.write(reinterpret_cast<const char*>(entity.position), sizeof(entity.position));
         file.write(reinterpret_cast<const char*>(&entity.health), sizeof(entity.health));
-        uint8_t state = entity.state;
-        file.write(reinterpret_cast<const char*>(&state), sizeof(state));
+        file.write(reinterpret_cast<const char*>(&entity.state), sizeof(entity.state));
     }
-    // Write player state
-    file.write(reinterpret_cast<const char*>(player.position), sizeof(player.position));
-    // Write inventory (36 slots, each: 1 byte type + 1 byte count)
-    file.write(reinterpret_cast<const char*>(inventory.data()), inventory.size());
-    // Write settings
-    // Note: settings are saved separately via SaveSettings/LoadSettings
 
-    file.close();
-    return true;
+    file.write(reinterpret_cast<const char*>(inventory.data()), inventory.size());
+    return file.good();
+}
+
+bool SaveSlot::LoadFromFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (!file.good() || magic != SAVE_MAGIC || (version != 2u && version != SAVE_VERSION)) {
+        std::cerr << "Invalid save file: " << path << std::endl;
+        return false;
+    }
+
+    file.read(reinterpret_cast<char*>(&seed), sizeof(seed));
+
+    Dimension dimension = Dimension::Upperworld;
+    if (version >= 3u) {
+        uint8_t dimensionByte = 0;
+        file.read(reinterpret_cast<char*>(&dimensionByte), sizeof(dimensionByte));
+        if (dimensionByte < static_cast<uint8_t>(Dimension::Count)) {
+            dimension = static_cast<Dimension>(dimensionByte);
+        }
+    }
+
+    uint32_t chunkCount = 0;
+    file.read(reinterpret_cast<char*>(&chunkCount), sizeof(chunkCount));
+    world = World();
+    world.SetSeed(seed);
+    world.SetDimension(dimension);
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        uint64_t id = 0;
+        file.read(reinterpret_cast<char*>(&id), sizeof(id));
+        int cx = 0, cy = 0, cz = 0;
+        World::UnpackKey(id, cx, cy, cz);
+        Chunk& chunk = world.GetOrCreateChunk(cx, cy, cz);
+        file.read(reinterpret_cast<char*>(chunk.blocks), CHUNK_VOLUME);
+    }
+
+    uint32_t entityCount = 0;
+    file.read(reinterpret_cast<char*>(&entityCount), sizeof(entityCount));
+    entities.resize(entityCount);
+    for (uint32_t i = 0; i < entityCount; ++i) {
+        EntitySaveData& entity = entities[i];
+        file.read(reinterpret_cast<char*>(&entity.type), sizeof(entity.type));
+        file.read(reinterpret_cast<char*>(entity.position), sizeof(entity.position));
+        file.read(reinterpret_cast<char*>(&entity.health), sizeof(entity.health));
+        file.read(reinterpret_cast<char*>(&entity.state), sizeof(entity.state));
+    }
+
+    file.read(reinterpret_cast<char*>(inventory.data()), inventory.size());
+    return file.good() || file.eof();
 }
 
 bool SaveSettings(const std::string& path, const GameSettings& settings) {
     std::ofstream file(path);
     if (!file.is_open()) {
-        std::cerr << "Failed to save settings to: " << path << std::endl;
+        std::cerr << "Failed to open settings file for writing: " << path << std::endl;
         return false;
     }
 
-    nlohmann::json jsonSettings;
-    jsonSettings["renderDistance"] = settings.renderDistance;
-    jsonSettings["fov"] = settings.fov;
-    jsonSettings["volume"] = settings.volume;
-    jsonSettings["fullscreen"] = settings.fullscreen;
-    jsonSettings["mouseSensitivity"] = settings.mouseSensitivity;
-    jsonSettings["moveForward"] = settings.moveForward;
-    jsonSettings["moveBack"] = settings.moveBack;
-    jsonSettings["moveLeft"] = settings.moveLeft;
-    jsonSettings["moveRight"] = settings.moveRight;
-    jsonSettings["jump"] = settings.jump;
-    jsonSettings["inventory"] = settings.inventory;
-    jsonSettings["sprint"] = settings.sprint;
+    nlohmann::json json;
+    json["renderDistance"] = settings.renderDistance;
+    json["fov"] = settings.fov;
+    json["volume"] = settings.volume;
+    json["fullscreen"] = settings.fullscreen;
+    json["mouseSensitivity"] = settings.mouseSensitivity;
+    json["moveForward"] = settings.moveForward;
+    json["moveBack"] = settings.moveBack;
+    json["moveLeft"] = settings.moveLeft;
+    json["moveRight"] = settings.moveRight;
+    json["jump"] = settings.jump;
+    json["inventory"] = settings.inventory;
+    json["sprint"] = settings.sprint;
 
-    file << jsonSettings.dump(4); // Pretty print with 4 space indent
-    file.close();
-    return true;
+    file << json.dump(2);
+    return file.good();
 }
 
 bool LoadSettings(const std::string& path, GameSettings& settings) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        // No settings file exists, use defaults
-        std::cerr << "No settings file found at: " << path << ", using defaults" << std::endl;
         return false;
     }
 
-    nlohmann::json jsonSettings;
+    nlohmann::json json;
     try {
-        file >> jsonSettings;
+        file >> json;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to parse settings file: " << e.what() << std::endl;
+        std::cerr << "Failed to parse settings: " << e.what() << std::endl;
         return false;
     }
 
-    // Load with defaults
-    settings.renderDistance = jsonSettings.value("renderDistance", 16);
-    settings.fov = jsonSettings.value("fov", 70.0f);
-    settings.volume = jsonSettings.value("volume", 50.0f);
-    settings.fullscreen = jsonSettings.value("fullscreen", false);
-    settings.mouseSensitivity = jsonSettings.value("mouseSensitivity", 1);
-    settings.moveForward = jsonSettings.value("moveForward", GLFW_KEY_W);
-    settings.moveBack = jsonSettings.value("moveBack", GLFW_KEY_S);
-    settings.moveLeft = jsonSettings.value("moveLeft", GLFW_KEY_A);
-    settings.moveRight = jsonSettings.value("moveRight", GLFW_KEY_D);
-    settings.jump = jsonSettings.value("jump", GLFW_KEY_SPACE);
-    settings.inventory = jsonSettings.value("inventory", GLFW_KEY_E);
-    settings.sprint = jsonSettings.value("sprint", GLFW_KEY_LEFT_SHIFT);
-
+    settings.renderDistance = json.value("renderDistance", settings.renderDistance);
+    settings.fov = json.value("fov", settings.fov);
+    settings.volume = json.value("volume", settings.volume);
+    settings.fullscreen = json.value("fullscreen", settings.fullscreen);
+    settings.mouseSensitivity = json.value("mouseSensitivity", settings.mouseSensitivity);
+    settings.moveForward = json.value("moveForward", settings.moveForward);
+    settings.moveBack = json.value("moveBack", settings.moveBack);
+    settings.moveLeft = json.value("moveLeft", settings.moveLeft);
+    settings.moveRight = json.value("moveRight", settings.moveRight);
+    settings.jump = json.value("jump", settings.jump);
+    settings.inventory = json.value("inventory", settings.inventory);
+    settings.sprint = json.value("sprint", settings.sprint);
     return true;
 }
