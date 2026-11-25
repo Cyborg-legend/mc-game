@@ -56,7 +56,7 @@ bool WindowsPlatform::InitWindow(uint32_t width, uint32_t height, const char* ti
 }
 
 void WindowsPlatform::OnKey(int key, int action) {
-    if (key < 0 || key >= 256) {
+    if (key < 0 || key >= INPUT_KEY_COUNT) {
         return;
     }
     if (action == GLFW_PRESS) {
@@ -86,7 +86,9 @@ void WindowsPlatform::OnMouseButton(int button, int action) {
 
 void WindowsPlatform::PollEvents() {
     glfwPollEvents();
-    if (glfwWindowShouldClose(m_window) || m_inputState.keys[GLFW_KEY_ESCAPE]) {
+    // Escape belongs to the game (it saves and returns to the menu); only the
+    // window's close button ends the program.
+    if (glfwWindowShouldClose(m_window)) {
         m_shouldQuit = true;
     }
 
@@ -126,6 +128,27 @@ void WindowsPlatform::SetWindowTitle(const char* title) {
     if (m_window) {
         glfwSetWindowTitle(m_window, title);
     }
+}
+
+void WindowsPlatform::SetCursorCaptured(bool captured) {
+    if (!m_window) {
+        return;
+    }
+    glfwSetInputMode(m_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(m_window, GLFW_RAW_MOUSE_MOTION, captured ? GLFW_TRUE : GLFW_FALSE);
+    }
+    // Drop the movement accumulated while the cursor was free so the camera does
+    // not snap when gameplay starts.
+    m_accumMouseDX = 0;
+    m_accumMouseDY = 0;
+    double cursorX = 0.0;
+    double cursorY = 0.0;
+    glfwGetCursorPos(m_window, &cursorX, &cursorY);
+    m_lastMouseX = cursorX;
+    m_lastMouseY = cursorY;
+    m_inputState.mouseDX = 0;
+    m_inputState.mouseDY = 0;
 }
 
 void WindowsPlatform::ShutdownWindow() {

@@ -2,12 +2,14 @@
 #include <GLFW/glfw3.h>
 
 #include <cmath>
-#include <iostream>
+#include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "audio/audio.h"
 #include "core/entities/mob.h"
+#include "core/log.h"
 #include "core/physics/player.h"
 #include "core/save/save.h"
 #include "core/world/chunk.h"
@@ -15,10 +17,11 @@
 #include "platform/common/iplatform.h"
 #include "renderer/meshing/greedy_mesher.h"
 #include "renderer/opengl/opengl_renderer.h"
+#include "ui/menu.h"
+#include "ui/ui.h"
 
 namespace {
 
-constexpr int kChunkRadius = 6;
 constexpr int kGateX = 12; // rift gate column used by both realms
 constexpr int kGateZ = 8;
 constexpr float kPhysicsDt = 1.0f / 20.0f;
@@ -103,44 +106,68 @@ bool PlayerInsideRift(const World& world, const Player& player) {
            world.GetBlock(bx, feetY + 1, bz) == BlockType::Portal;
 }
 
+enum class AppState {
+    Menu,
+    Playing
+};
+
 } // namespace
 
 int main() {
     IPlatform* platform = CreatePlatform();
     if (!platform) {
-        std::cerr << "Failed to create platform backend" << std::endl;
+        std::fprintf(stderr, "Failed to create platform backend\n");
         return 1;
     }
 
-    if (!platform->InitWindow(1280, 720, "BlockForge | Upperworld")) {
+    const std::string saveDir = platform->GetSaveDir();
+    Log::Init(saveDir + "/blockforge.log");
+    Log::Write("BlockForge starting");
+
+    if (!platform->InitWindow(1280, 720, "BlockForge")) {
+        Log::ShowFatal("BlockForge could not open an OpenGL window.\n\nDetails: " + Log::Path());
         delete platform;
         return 1;
     }
 
     OpenGLRenderer renderer;
     if (!renderer.init()) {
-        std::cerr << "Failed to initialize OpenGL renderer" << std::endl;
+        Log::ShowFatal("BlockForge could not start its OpenGL renderer.\n\nDetails: " + Log::Path());
         platform->ShutdownWindow();
         delete platform;
         return 1;
     }
+    Log::Write("Renderer ready");
 
     AudioSystem audio;
     if (!audio.Initialize()) {
-        std::cerr << "Audio unavailable, continuing without sound" << std::endl;
+        Log::Write("Audio unavailable, continuing without sound");
     }
 
     DebugOverlay::Initialize();
 
-    World world;
-    world.SetSeed(20251125u);
+    const std::string savePath = saveDir + "/world.sav";
+    bool hasSave = std::filesystem::exists(savePath);
 
+    MainMenu menu;
+    menu.Reset(hasSave);
+
+    World world;
     std::vector<uint64_t> visibleChunks;
     visibleChunks.reserve(4096);
 
     Player player;
     std::vector<Mob> mobs;
     float portalCooldown = 0.0f;
+    int chunkRadius = menu.Options().renderDistance;
+
+    Camera camera;
+    camera.aspect = 1280.0f / 720.0f;
+
+    UiDrawList ui;
+
+    AppState state = AppState::Menu;
+    platform->SetCursorCaptured(false);
 
     auto uploadWorld = [&]() {
         renderer.clearChunks();
@@ -177,10 +204,62 @@ int main() {
         }
     };
 
+    auto updateTitle = [&]() {
+        platform->SetWindowTitle(world.GetDimension() == Dimension::Underworld
+                                     ? "BlockForge | Underworld"
+                                     : "BlockForge | Upperworld");
+    };
+
+    auto placePlayerAtGate = [&](int gateY) {
+        player = Player();
+        player.x = static_cast<float>(kGateX - 3) + 0.5f;
+        player.z = static_cast<float>(kGateZ) + 0.5f;
+        player.y = static_cast<float>(gateY) + 1.0f;
+        player.yaw = 0.0f; // face the rift gate
+        player.vx = 0.0f;
+        player.vy = 0.0f;
+        player.vz = 0.0f;
+        player.onGround = false;
+
+        camera.position = glm::vec3(player.x, player.y + 1.62f, player.z);
+        camera.yaw = player.yaw;
+        camera.pitch = player.pitch;
+        portalCooldown = 2.0f;
+    };
+
+    auto saveWorld = [&]() {
+        if (world.GetChunkCount() == 0) {
+            return;
+        }
+        SaveSlot slot;
+        slot.seed = world.GetSeed();
+        slot.world = world;
+        for (int i = 0; i < 36; ++i) {
+            slot.inventory[static_cast<size_t>(i)] = player.inventory[i];
+        }
+        if (!slot.SaveToFile(savePath)) {
+            Log::Write("Failed to save world: " + savePath);
+            return;
+        }
+        GameSettings settings;
+        settings.renderDistance = chunkRadius;
+        SaveSettings(saveDir + "/settings.json", settings);
+        hasSave = true;
+        Log::Write("Saved world to " + savePath);
+    };
+
+    auto goToMenu = [&]() {
+        saveWorld();
+        menu.Reset(hasSave);
+        state = AppState::Menu;
+        platform->SetCursorCaptured(false);
+        platform->SetWindowTitle("BlockForge");
+    };
+
     auto travel = [&](Dimension target) {
         world.SetDimension(target);
         world.Clear();
-        world.GenerateChunksAround(FloorDiv(kGateX, CHUNK_SIZE), FloorDiv(kGateZ, CHUNK_SIZE), kChunkRadius);
+        world.GenerateChunksAround(FloorDiv(kGateX, CHUNK_SIZE), FloorDiv(kGateZ, CHUNK_SIZE), chunkRadius);
         const int gateY = BuildRiftGate(world, kGateX, kGateZ);
         uploadWorld();
 
@@ -196,32 +275,75 @@ int main() {
         portalCooldown = 2.0f;
         spawnMobs();
         applyEnvironment();
-
-        platform->SetWindowTitle(target == Dimension::Underworld
-                                     ? "BlockForge | Underworld"
-                                     : "BlockForge | Upperworld");
+        updateTitle();
         audio.PlaySound("portal", player.x, player.y, player.z, 0.9f);
     };
 
-    // ---- Upperworld start -------------------------------------------------
-    world.SetDimension(Dimension::Upperworld);
-    world.GenerateChunks(kChunkRadius);
-    const int startGateY = BuildRiftGate(world, kGateX, kGateZ);
-    uploadWorld();
+    auto startNewWorld = [&](const WorldOptions& options) {
+        world = World();
+        world.SetSeed(options.seed);
+        world.SetDimension(options.startingRealm);
+        chunkRadius = options.renderDistance;
+        Log::Write("Generating world seed=" + std::to_string(options.seed) +
+                   " radius=" + std::to_string(options.renderDistance) +
+                   " realm=" + DimensionName(options.startingRealm));
 
-    player.x = static_cast<float>(kGateX - 3) + 0.5f;
-    player.z = static_cast<float>(kGateZ) + 0.5f;
-    player.y = static_cast<float>(startGateY) + 1.0f;
-    player.yaw = 0.0f; // face the rift gate
-    spawnMobs();
-    applyEnvironment();
-    platform->SetWindowTitle("BlockForge | Upperworld");
+        world.GenerateChunksAround(FloorDiv(kGateX, CHUNK_SIZE), FloorDiv(kGateZ, CHUNK_SIZE), chunkRadius);
+        const int gateY = BuildRiftGate(world, kGateX, kGateZ);
+        uploadWorld();
+        placePlayerAtGate(gateY);
+        spawnMobs();
+        applyEnvironment();
+        updateTitle();
+        audio.PlaySound("portal", player.x, player.y, player.z, 0.9f);
+        state = AppState::Playing;
+    };
 
-    Camera camera;
-    camera.position = glm::vec3(player.x, player.y + 1.62f, player.z);
-    camera.yaw = player.yaw;
-    camera.pitch = player.pitch;
-    camera.aspect = 1280.0f / 720.0f;
+    auto continueWorld = [&]() {
+        SaveSlot slot;
+        if (!slot.LoadFromFile(savePath)) {
+            Log::Write("Could not load " + savePath);
+            hasSave = false;
+            menu.Reset(hasSave);
+            return;
+        }
+        world = slot.world;
+        chunkRadius = menu.Options().renderDistance;
+        Log::Write("Loaded world seed=" + std::to_string(slot.seed) +
+                   " realm=" + DimensionName(world.GetDimension()) +
+                   " chunks=" + std::to_string(world.GetChunkCount()));
+
+        const int gateY = BuildRiftGate(world, kGateX, kGateZ);
+        uploadWorld();
+        placePlayerAtGate(gateY);
+        for (size_t i = 0; i < slot.inventory.size() && i < 36; ++i) {
+            player.inventory[i] = slot.inventory[i];
+        }
+        spawnMobs();
+        applyEnvironment();
+        updateTitle();
+        state = AppState::Playing;
+    };
+
+    auto drawLoadingScreen = [&](const std::string& message) {
+        int viewportW = 1280;
+        int viewportH = 720;
+        renderer.viewportSize(viewportW, viewportH);
+        renderer.render(camera, std::vector<uint64_t>());
+
+        ui.Clear();
+        ui.Rect(0.0f, 0.0f, static_cast<float>(viewportW), static_cast<float>(viewportH),
+                { 0.05f, 0.06f, 0.09f, 1.0f });
+        ui.TextCentered(static_cast<float>(viewportW) * 0.5f,
+                        static_cast<float>(viewportH) * 0.44f, 3.0f, message,
+                        { 0.98f, 0.86f, 0.52f, 1.0f });
+        ui.TextCentered(static_cast<float>(viewportW) * 0.5f,
+                        static_cast<float>(viewportH) * 0.58f, 1.6f,
+                        "CARVING THE REALMS", { 0.62f, 0.70f, 0.85f, 1.0f });
+        renderer.renderUiVertices(ui.Vertices());
+        platform->SwapBuffers();
+        platform->PollEvents();
+    };
 
     float accumulator = 0.0f;
     double lastTime = platform->GetTime();
@@ -234,10 +356,52 @@ int main() {
             frameTime = 0.25f;
         }
         accumulator += frameTime;
-        portalCooldown = (portalCooldown > frameTime) ? (portalCooldown - frameTime) : 0.0f;
 
         platform->PollEvents();
         const InputState input = platform->GetInputState();
+
+        if (state == AppState::Menu) {
+            const MenuAction action = menu.Update(input, hasSave);
+
+            if (action == MenuAction::QuitGame) {
+                break;
+            }
+            if (action == MenuAction::NewGame) {
+                drawLoadingScreen("GENERATING WORLD");
+                startNewWorld(menu.Options());
+                platform->SetCursorCaptured(true);
+            } else if (action == MenuAction::ContinueGame) {
+                drawLoadingScreen("LOADING WORLD");
+                continueWorld();
+                if (state == AppState::Playing) {
+                    platform->SetCursorCaptured(true);
+                }
+            }
+
+            if (state == AppState::Menu) {
+                int viewportW = 1280;
+                int viewportH = 720;
+                renderer.viewportSize(viewportW, viewportH);
+                camera.aspect = static_cast<float>(viewportW) / static_cast<float>(viewportH > 0 ? viewportH : 1);
+                renderer.render(camera, std::vector<uint64_t>());
+                ui.Clear();
+                menu.Draw(ui, static_cast<float>(viewportW), static_cast<float>(viewportH), hasSave);
+                renderer.renderUiVertices(ui.Vertices());
+                platform->SwapBuffers();
+            }
+
+            DebugOverlay::UpdateStats(frameTime, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, "Menu");
+            continue;
+        }
+
+        // ---- Playing -------------------------------------------------------
+        if (input.keys[GLFW_KEY_ESCAPE]) {
+            Log::Write("Returning to the menu");
+            goToMenu();
+            continue;
+        }
+
+        portalCooldown = (portalCooldown > frameTime) ? (portalCooldown - frameTime) : 0.0f;
 
         // Mouse look.
         camera.Look(static_cast<float>(input.mouseDX), static_cast<float>(input.mouseDY));
@@ -298,6 +462,11 @@ int main() {
         camera.position = glm::vec3(player.x, player.y + 1.62f, player.z);
         audio.UpdateListener(camera.position.x, camera.position.y, camera.position.z);
 
+        int viewportW = 1280;
+        int viewportH = 720;
+        renderer.viewportSize(viewportW, viewportH);
+        camera.aspect = static_cast<float>(viewportW) / static_cast<float>(viewportH > 0 ? viewportH : 1);
+
         renderer.render(camera, visibleChunks);
 
         HudState hud;
@@ -321,20 +490,14 @@ int main() {
         DebugOverlay::Render();
     }
 
-    // Persist the world next to the executable user data directory.
-    const std::string saveDir = platform->GetSaveDir();
-    SaveSlot slot;
-    slot.seed = world.GetSeed();
-    slot.world = world;
-    for (int i = 0; i < 36; ++i) {
-        slot.inventory[static_cast<size_t>(i)] = player.inventory[i];
+    if (state == AppState::Playing) {
+        saveWorld();
     }
-    slot.SaveToFile(saveDir + "/world.sav");
-    SaveSettings(saveDir + "/settings.json", GameSettings{});
 
     audio.Shutdown();
     renderer.shutdown();
     platform->ShutdownWindow();
     delete platform;
+    Log::Write("BlockForge closed");
     return 0;
 }

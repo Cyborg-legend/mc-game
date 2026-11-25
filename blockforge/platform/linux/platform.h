@@ -17,6 +17,7 @@ public:
     void SetWindowShouldCloseCallback(bool (*callback)(bool)) override;
     void SetCloseCallback(CloseCallback cb) override;
     void SetWindowTitle(const char* title) override;
+    void SetCursorCaptured(bool captured) override;
     void ShutdownWindow() override;
     const char* GetSaveDir() const override;
     void SetWindowIcon(const uint8_t* pixels, uint32_t width, uint32_t height) override;

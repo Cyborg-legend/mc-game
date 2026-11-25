@@ -1,5 +1,8 @@
 #include "opengl/opengl_renderer.h"
 
+#include "core/log.h"
+
+#include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -111,7 +114,7 @@ GLuint CompileShader(GLenum type, const char* source) {
     if (!ok) {
         char log[1024] = { 0 };
         glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        std::cerr << "Shader compile error: " << log << std::endl;
+        Log::Write(std::string("Shader compile error: ") + log);
         glDeleteShader(shader);
         return 0;
     }
@@ -137,7 +140,7 @@ GLuint LinkProgram(const char* vertexSource, const char* fragmentSource) {
     if (!ok) {
         char log[1024] = { 0 };
         glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        std::cerr << "Program link error: " << log << std::endl;
+        Log::Write(std::string("Program link error: ") + log);
         glDeleteProgram(program);
         program = 0;
     }
@@ -405,13 +408,32 @@ void OpenGLRenderer::initUiBuffers() {
 }
 
 bool OpenGLRenderer::init() {
-    if (glewInit() != GLEW_OK) {
-        std::cerr << "Failed to initialize GLEW" << std::endl;
+    // A 3.3 core profile exposes no legacy entry points, so GLEW has to probe
+    // extensions experimentally; without this glewInit() fails on many drivers
+    // (Intel included) and the window closes right after it opens.
+    glewExperimental = GL_TRUE;
+    const GLenum glewStatus = glewInit();
+    if (glewStatus != GLEW_OK) {
+        Log::Write(std::string("GLEW init failed: ") +
+                   reinterpret_cast<const char*>(glewGetErrorString(glewStatus)));
         return false;
+    }
+    // The experimental probe can leave one GL_INVALID_ENUM behind; clear it so
+    // the game's own error checks start clean.
+    while (glGetError() != GL_NO_ERROR) {
     }
 
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    std::cout << "OpenGL " << (version ? version : "unknown") << std::endl;
+    const char* rendererName = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    Log::Write(std::string("OpenGL ") + (version ? version : "unknown") +
+               " | " + (rendererName ? rendererName : "unknown renderer"));
+
+    if (!GLEW_VERSION_3_3) {
+        Log::Write("OpenGL 3.3 is required but the driver does not expose it.");
+        return false;
+    }
+
+    glfwSwapInterval(1);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -419,7 +441,12 @@ bool OpenGLRenderer::init() {
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
-    if (!compileShaders() || !compileUiShaders()) {
+    if (!compileShaders()) {
+        Log::Write("World shader failed to build.");
+        return false;
+    }
+    if (!compileUiShaders()) {
+        Log::Write("UI shader failed to build.");
         return false;
     }
 
@@ -522,15 +549,55 @@ void OpenGLRenderer::render(const Camera& camera, const std::vector<uint64_t>& v
     glBindVertexArray(0);
 }
 
+void OpenGLRenderer::viewportSize(int& width, int& height) const {
+    GLint viewport[4] = { 0, 0, 1280, 720 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    width = viewport[2] > 0 ? viewport[2] : 1280;
+    height = viewport[3] > 0 ? viewport[3] : 720;
+}
+
+void OpenGLRenderer::renderUiVertices(const std::vector<float>& vertices) {
+    if (!uiProgram_ || vertices.empty()) {
+        return;
+    }
+
+    int viewportW = 1280;
+    int viewportH = 720;
+    viewportSize(viewportW, viewportH);
+    const float width = static_cast<float>(viewportW);
+    const float height = static_cast<float>(viewportH);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(uiProgram_);
+    glUniform2f(glGetUniformLocation(uiProgram_, "screenSize"), width, height);
+
+    glBindVertexArray(uiVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
+                 vertices.data(), GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size() / 6));
+    glBindVertexArray(0);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void OpenGLRenderer::renderHud(const HudState& hud) {
     if (!uiProgram_) {
         return;
     }
 
-    GLint viewport[4] = { 0, 0, 1280, 720 };
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    const float width = static_cast<float>(viewport[2] > 0 ? viewport[2] : 1280);
-    const float height = static_cast<float>(viewport[3] > 0 ? viewport[3] : 720);
+    int viewportW = 1280;
+    int viewportH = 720;
+    viewportSize(viewportW, viewportH);
+    const float width = static_cast<float>(viewportW);
+    const float height = static_cast<float>(viewportH);
 
     std::vector<float> vertices;
     vertices.reserve(6 * 6 * 48);
@@ -578,25 +645,7 @@ void OpenGLRenderer::renderHud(const HudState& hud) {
                  16.0f, 16.0f, r, g, b, 0.95f);
     }
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    glUseProgram(uiProgram_);
-    glUniform2f(glGetUniformLocation(uiProgram_, "screenSize"), width, height);
-
-    glBindVertexArray(uiVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
-                 vertices.data(), GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size() / 6));
-    glBindVertexArray(0);
-
-    glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
+    renderUiVertices(vertices);
 }
 
 GLuint OpenGLRenderer::generateTextureAtlas() {

@@ -54,7 +54,7 @@ bool LinuxPlatform::InitWindow(uint32_t width, uint32_t height, const char* titl
 }
 
 void LinuxPlatform::OnKey(int key, int action) {
-    if (key < 0 || key >= 256) {
+    if (key < 0 || key >= INPUT_KEY_COUNT) {
         return;
     }
     if (action == GLFW_PRESS) {
@@ -84,7 +84,7 @@ void LinuxPlatform::OnMouseButton(int button, int action) {
 
 void LinuxPlatform::PollEvents() {
     glfwPollEvents();
-    if (glfwWindowShouldClose(m_window) || m_inputState.keys[GLFW_KEY_ESCAPE]) {
+    if (glfwWindowShouldClose(m_window)) {
         m_shouldQuit = true;
     }
 
@@ -124,6 +124,25 @@ void LinuxPlatform::SetWindowTitle(const char* title) {
     if (m_window) {
         glfwSetWindowTitle(m_window, title);
     }
+}
+
+void LinuxPlatform::SetCursorCaptured(bool captured) {
+    if (!m_window) {
+        return;
+    }
+    glfwSetInputMode(m_window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(m_window, GLFW_RAW_MOUSE_MOTION, captured ? GLFW_TRUE : GLFW_FALSE);
+    }
+    m_accumMouseDX = 0;
+    m_accumMouseDY = 0;
+    double cursorX = 0.0;
+    double cursorY = 0.0;
+    glfwGetCursorPos(m_window, &cursorX, &cursorY);
+    m_lastMouseX = cursorX;
+    m_lastMouseY = cursorY;
+    m_inputState.mouseDX = 0;
+    m_inputState.mouseDY = 0;
 }
 
 void LinuxPlatform::ShutdownWindow() {

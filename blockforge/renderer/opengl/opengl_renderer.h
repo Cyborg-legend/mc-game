@@ -57,6 +57,12 @@ public:
     void render(const Camera& camera, const std::vector<uint64_t>& visibleChunks);
     void renderHud(const HudState& hud);
 
+    // Draws an overlay batch built by UiDrawList (x, y, r, g, b, a per vertex).
+    void renderUiVertices(const std::vector<float>& vertices);
+
+    // Current drawable size in pixels; the window can be resized at runtime.
+    void viewportSize(int& width, int& height) const;
+
     GLuint generateTextureAtlas();
     void setLightPosition(const glm::vec3& pos);
     void setEnvironment(const Environment& environment);
