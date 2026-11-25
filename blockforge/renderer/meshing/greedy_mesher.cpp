@@ -20,15 +20,10 @@ const int kCornerOffsets[6][4][3] = {
     {{0,0,0},{0,1,0},{1,1,0},{1,0,0}}
 };
 
-// For AO we sample neighbours around each face vertex inside the face plane.
-const int kAoNeighborDirs[6][4][3] = {
-    {{0,1,0},{0,1,1},{0,-1,1},{0,-1,0}},  // +X
-    {{0,1,0},{0,1,1},{0,-1,1},{0,-1,0}},  // -X
-    {{1,0,0},{1,0,1},{-1,0,1},{-1,0,0}},  // +Y
-    {{1,0,0},{1,0,1},{-1,0,1},{-1,0,0}},  // -Y
-    {{1,0,0},{1,0,1},{-1,0,1},{-1,0,0}},  // +Z
-    {{1,0,0},{1,0,1},{-1,0,1},{-1,0,0}}   // -Z
-};
+// Tangent axes of each face, used to place the three ambient-occlusion probes
+// around a quad corner: one along U, one along V and one on the diagonal.
+const int kFaceTangentU[6] = { 1, 1, 0, 0, 0, 0 }; // Y, Y, X, X, X, X
+const int kFaceTangentV[6] = { 2, 2, 2, 2, 1, 1 }; // Z, Z, Z, Z, Y, Y
 
 // Samples a block at chunk-local coordinates, falling through to the world for
 // border queries. The local fast path avoids a hash lookup for most faces.
@@ -93,20 +88,32 @@ MeshChunk GreedyMesher::Mesh(const World& world, const Chunk& chunk) {
                     const float pad = kTileSize * 0.002f;
                     const float span = kTileSize - 2.0f * pad;
 
-                    // Face vertex AO: 1.0 when open, darker when crowded.
+                    // Per-corner ambient occlusion, like Minecraft: a vertex
+                    // darkens when the blocks beside it and the block across
+                    // the corner are filled.
                     float ao[4];
                     for (int c = 0; c < 4; ++c) {
-                        int solidNeighbors = 0;
-                        for (int k = 0; k < 3; ++k) {
-                            const int sx = nx + kAoNeighborDirs[dir][c][0];
-                            const int sy = ny + kAoNeighborDirs[dir][c][1];
-                            const int sz = nz + kAoNeighborDirs[dir][c][2];
-                            if (Solid(world, chunk, sx, sy, sz)) {
-                                ++solidNeighbors;
-                            }
-                        }
-                        ao[c] = 1.0f - 0.16f * static_cast<float>(solidNeighbors);
-                        if (ao[c] < 0.48f) ao[c] = 0.48f;
+                        const int su = kCornerOffsets[dir][c][kFaceTangentU[dir]] * 2 - 1;
+                        const int sv = kCornerOffsets[dir][c][kFaceTangentV[dir]] * 2 - 1;
+
+                        int offsetU[3] = { 0, 0, 0 };
+                        int offsetV[3] = { 0, 0, 0 };
+                        offsetU[kFaceTangentU[dir]] = su;
+                        offsetV[kFaceTangentV[dir]] = sv;
+
+                        const bool sideU = Solid(world, chunk,
+                            nx + offsetU[0], ny + offsetU[1], nz + offsetU[2]);
+                        const bool sideV = Solid(world, chunk,
+                            nx + offsetV[0], ny + offsetV[1], nz + offsetV[2]);
+                        const bool corner = Solid(world, chunk,
+                            nx + offsetU[0] + offsetV[0],
+                            ny + offsetU[1] + offsetV[1],
+                            nz + offsetU[2] + offsetV[2]);
+
+                        const int occlusion = (sideU && sideV)
+                            ? 3
+                            : (sideU ? 1 : 0) + (sideV ? 1 : 0) + (corner ? 1 : 0);
+                        ao[c] = 1.0f - 0.2f * static_cast<float>(occlusion);
                     }
 
                     const uint32_t base = static_cast<uint32_t>(result.vertices.size());
@@ -125,12 +132,22 @@ MeshChunk GreedyMesher::Mesh(const World& world, const Chunk& chunk) {
                         result.vertices.push_back(v);
                     }
 
-                    result.indices.push_back(base + 0);
-                    result.indices.push_back(base + 1);
-                    result.indices.push_back(base + 2);
-                    result.indices.push_back(base + 0);
-                    result.indices.push_back(base + 2);
-                    result.indices.push_back(base + 3);
+                    // Split along the darker diagonal so AO gradients stay smooth.
+                    if (ao[0] + ao[2] < ao[1] + ao[3]) {
+                        result.indices.push_back(base + 1);
+                        result.indices.push_back(base + 2);
+                        result.indices.push_back(base + 3);
+                        result.indices.push_back(base + 1);
+                        result.indices.push_back(base + 3);
+                        result.indices.push_back(base + 0);
+                    } else {
+                        result.indices.push_back(base + 0);
+                        result.indices.push_back(base + 1);
+                        result.indices.push_back(base + 2);
+                        result.indices.push_back(base + 0);
+                        result.indices.push_back(base + 2);
+                        result.indices.push_back(base + 3);
+                    }
                 }
             }
         }

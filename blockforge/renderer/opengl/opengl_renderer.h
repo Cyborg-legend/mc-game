@@ -90,6 +90,7 @@ private:
 
     bool compileShaders();
     bool compileUiShaders();
+    void renderSkyGradient();
     void initMeshBuffers();
     void initUiBuffers();
     void drawMesh(const MeshChunk& mesh);

@@ -52,9 +52,26 @@ private:
     bool Pressed(const InputState& input, int key) const;
     uint32_t ParseSeed() const;
     void SyncSeedText();
-    void DrawRow(UiDrawList& ui, float x, float y, float w, float h,
-                 const std::string& label, const std::string& value,
-                 bool selected) const;
-    void DrawButton(UiDrawList& ui, float x, float y, float w, float h,
-                    const std::string& label, bool selected, bool enabled) const;
+};
+
+enum class PauseAction {
+    None,
+    Resume,
+    SaveAndTitle,
+    QuitGame
+};
+
+// In-game pause overlay: Resume / Save & Return to Title / Quit. The world is
+// frozen behind it, so it reads as a pause rather than a screen change.
+class PauseMenu {
+public:
+    void Reset();
+    PauseAction Update(const InputState& input);
+    void Draw(UiDrawList& ui, float width, float height) const;
+
+private:
+    int selection_ = 0;
+    bool prevKeys_[INPUT_KEY_COUNT]{};
+
+    bool Pressed(const InputState& input, int key) const;
 };

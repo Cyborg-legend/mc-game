@@ -66,7 +66,19 @@ void main() {
     vec3 l = normalize(lightPos - vWorldPos);
     float diffuse = max(dot(n, l), 0.0);
 
-    vec3 color = base * (ambientColor + lightColor * diffuse * 0.72) * vAO;
+    // Minecraft-style face shading: tops catch the most light, bottoms the
+    // least, and east/west faces sit between so cubes read as cubes.
+    float faceShade = 0.70;
+    if (n.y > 0.5) {
+        faceShade = 1.0;
+    } else if (n.y < -0.5) {
+        faceShade = 0.52;
+    } else if (abs(n.x) > 0.5) {
+        faceShade = 0.82;
+    }
+
+    vec3 lit = ambientColor * 0.92 + lightColor * (0.26 + 0.34 * diffuse);
+    vec3 color = base * faceShade * lit * mix(0.45, 1.0, vAO);
 
     // Distance fog: thin in the Upperworld, thick and red in the Underworld.
     float distanceToCamera = length(vWorldPos - viewPos);
@@ -188,35 +200,47 @@ void PaintTilePixel(const AtlasTileDef& def, int tile, int px, int py, unsigned 
             shade = 0.92f + n * 0.12f;
             break;
         case TilePattern::Speckle:
-            shade = 0.84f + n * 0.30f;
-            if (n > 0.93f) shade *= 0.78f;
+            shade = 0.86f + n * 0.24f;
+            if (n > 0.94f) shade *= 0.74f;      // pebbles / pinholes
+            else if (n < 0.06f) shade *= 1.12f;
+            if (((px * 5 + py * 11 + tile * 3) % 17) == 0) shade *= 0.88f;
             break;
         case TilePattern::GrassTop:
-            shade = (n > 0.70f) ? 0.78f : (0.94f + n * 0.14f);
+            shade = 0.90f + n * 0.18f;
+            if (((px * 3 + py * 5 + tile) % 13) == 0) shade *= 0.80f; // blades
+            if (((px * 7 + py * 2) % 19) == 0) shade *= 1.10f;
             break;
         case TilePattern::GrassSide:
-            if (py < 4) {
+            // Jagged grass lip over dirt, like a cut turf edge.
+            if (py < 3 + (((px * 3 + 1) % 3 == 0) ? 1 : 0)) {
                 accentMix = 1.0f;
-                shade = 0.92f + n * 0.16f;
+                shade = 0.90f + n * 0.16f;
             } else {
-                shade = 0.84f + n * 0.28f;
+                shade = 0.84f + n * 0.26f;
             }
             break;
         case TilePattern::Bark:
-            shade = 0.80f + 0.22f * std::sin(static_cast<float>(px) * 1.9f + static_cast<float>(tile));
-            if ((px + py * 3) % 7 == 0) shade *= 0.72f;
-            shade += n * 0.08f;
+            shade = 0.82f + 0.18f * std::sin(static_cast<float>(px) * 1.7f + static_cast<float>(tile));
+            if (px % 5 == 0) shade *= 0.70f;               // deep grooves
+            if (py % 9 == 0 && px % 3 == 0) shade *= 0.84f; // knots
+            shade += n * 0.06f;
             break;
         case TilePattern::Rings:
-            shade = 0.76f + 0.26f * std::sin(radius * 2.1f);
+            shade = 0.74f + 0.28f * std::sin(radius * 2.4f);
+            if (radius < 1.2f) shade = 0.52f; // pith
             break;
-        case TilePattern::Foliage:
-            shade = 0.72f + n * 0.40f;
-            if (n > 0.86f) shade = 0.42f;
+        case TilePattern::Foliage: {
+            // 2x2 clusters make leaves read as bunches instead of static.
+            const float clump = PixelNoise(tile, px / 2, py / 2);
+            shade = 0.68f + clump * 0.48f;
+            if (clump > 0.82f) shade = 0.46f;
+            if (PixelNoise(tile + 91, px, py) > 0.93f) accentMix = 0.8f;
             break;
+        }
         case TilePattern::Liquid:
-            shade = 0.86f + 0.18f * std::sin(static_cast<float>(px) * 0.8f +
-                                            static_cast<float>(py) * 0.5f + n * 1.5f);
+            shade = 0.84f + 0.16f * std::sin(static_cast<float>(py) * 0.75f +
+                                            static_cast<float>(px) * 0.35f + n * 1.4f);
+            if (py % 6 == 0) shade *= 1.12f; // highlights on the swell
             break;
         case TilePattern::Chunky: {
             const int bx = px / 4;
@@ -227,8 +251,9 @@ void PaintTilePixel(const AtlasTileDef& def, int tile, int px, int py, unsigned 
         }
         case TilePattern::Planks:
             shade = 0.92f + n * 0.12f;
-            if (py % 5 == 0 || py == 15) shade = 0.62f;
-            if ((px + (py / 5) * 5) % 8 == 0) shade *= 0.76f;
+            if (py % 5 == 0 || py == 15) shade = 0.60f;          // board gaps
+            if ((px + (py / 5) * 5) % 8 == 0) shade *= 0.76f;    // end joints
+            if (((px * 3 + py * 7) % 11) == 0) shade *= 0.88f;   // grain
             break;
         case TilePattern::Grid:
             shade = (px % 6 < 1 || py % 6 < 1) ? 0.55f : (0.90f + n * 0.14f);
@@ -245,15 +270,17 @@ void PaintTilePixel(const AtlasTileDef& def, int tile, int px, int py, unsigned 
             break;
         }
         case TilePattern::Ore:
-            shade = 0.82f + n * 0.26f;
-            if (radius < 3.4f + n * 2.0f) {
+            shade = 0.84f + n * 0.22f;
+            if (radius < 4.2f + n * 1.6f) {
                 accentMix = 1.0f;
-                shade = 0.95f + n * 0.18f;
+                shade = 0.96f + n * 0.16f;
+                if (radius > 3.3f) shade *= 0.76f; // dark rim around the vein
             }
             break;
         case TilePattern::Glow:
-            shade = 1.18f - radius * 0.045f + n * 0.10f;
-            if (radius < 2.6f) accentMix = 0.7f;
+            shade = 1.10f - radius * 0.04f + n * 0.08f;
+            if (radius < 2.2f) accentMix = 0.8f;
+            if (radius > 6.6f) shade *= 0.84f;
             break;
         case TilePattern::Swirl: {
             const float wave = std::sin((static_cast<float>(px) + static_cast<float>(py)) * 0.9f + n * 2.2f);
@@ -274,8 +301,9 @@ void PaintTilePixel(const AtlasTileDef& def, int tile, int px, int py, unsigned 
             break;
         }
         case TilePattern::Ash:
-            shade = 0.90f + n * 0.16f;
-            if (n > 0.93f) shade = 0.62f;
+            shade = 0.88f + n * 0.18f;
+            if (n > 0.94f) shade = 0.60f;
+            if (((px * 5 + py * 3) % 23) == 0) shade *= 1.10f;
             break;
         case TilePattern::Unused:
             shade = 0.0f;
@@ -508,11 +536,51 @@ void OpenGLRenderer::drawMesh(const MeshChunk& mesh) {
     ++drawCalls_;
 }
 
+void OpenGLRenderer::renderSkyGradient() {
+    if (!uiProgram_) {
+        return;
+    }
+
+    int viewportW = 1280;
+    int viewportH = 720;
+    viewportSize(viewportW, viewportH);
+    const float width = static_cast<float>(viewportW);
+    const float height = static_cast<float>(viewportH);
+
+    // Two-tone sky: a deeper colour overhead blending into the fog at the
+    // horizon, which stops distant terrain from ending in a hard line.
+    const glm::vec3 top = environment_.sky * 0.88f;
+    const glm::vec3 bottom = environment_.fogColor;
+    const float verts[6][6] = {
+        { 0.0f, 0.0f, top.r, top.g, top.b, 1.0f },
+        { width, 0.0f, top.r, top.g, top.b, 1.0f },
+        { width, height, bottom.r, bottom.g, bottom.b, 1.0f },
+        { 0.0f, 0.0f, top.r, top.g, top.b, 1.0f },
+        { width, height, bottom.r, bottom.g, bottom.b, 1.0f },
+        { 0.0f, height, bottom.r, bottom.g, bottom.b, 1.0f },
+    };
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glUseProgram(uiProgram_);
+    glUniform2f(glGetUniformLocation(uiProgram_, "screenSize"), width, height);
+    glBindVertexArray(uiVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(verts)), verts, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void OpenGLRenderer::render(const Camera& camera, const std::vector<uint64_t>& visibleChunks) {
     drawCalls_ = 0;
 
     glClearColor(environment_.sky.r, environment_.sky.g, environment_.sky.b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderSkyGradient();
 
     if (!program_) {
         return;
@@ -629,8 +697,17 @@ void OpenGLRenderer::renderHud(const HudState& hud) {
 
         float color[3] = { 0.1f, 0.1f, 0.1f };
         BlockColor(static_cast<BlockType>(hud.hotbar[i]), color);
-        PushQuad(vertices, x + 5.0f, barY + 5.0f, slot - 10.0f, slot - 10.0f,
+        const float iconX = x + 5.0f;
+        const float iconY = barY + 5.0f;
+        const float iconSize = slot - 10.0f;
+        PushQuad(vertices, iconX, iconY, iconSize, iconSize,
                  color[0], color[1], color[2], 0.95f);
+        // Bevel the icon so it reads as a small block instead of a flat square.
+        PushQuad(vertices, iconX, iconY, iconSize, 5.0f,
+                 std::min(1.0f, color[0] * 1.45f), std::min(1.0f, color[1] * 1.45f),
+                 std::min(1.0f, color[2] * 1.45f), 0.9f);
+        PushQuad(vertices, iconX, iconY + iconSize - 6.0f, iconSize, 6.0f,
+                 color[0] * 0.6f, color[1] * 0.6f, color[2] * 0.6f, 0.9f);
     }
 
     // Health bar.
@@ -688,7 +765,11 @@ GLuint OpenGLRenderer::generateTextureAtlas() {
     }
     glBindTexture(GL_TEXTURE_2D, atlas_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kAtlasSize, kAtlasSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    // Mipmaps keep distant blocks from shimmering into noise; the level cap
+    // stops very small mips from blending neighbouring atlas tiles together.
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 3);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);

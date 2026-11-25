@@ -24,6 +24,10 @@ namespace {
 
 constexpr int kGateX = 12; // rift gate column used by both realms
 constexpr int kGateZ = 8;
+// Where the player appears: on the court in front of the gate, looking at it.
+constexpr int kSpawnX = kGateX;
+constexpr int kSpawnZ = kGateZ - 6;
+constexpr float kSpawnYaw = 1.5707963f; // +Z, toward the gate
 constexpr float kPhysicsDt = 1.0f / 20.0f;
 
 int FloorDiv(int value, int divisor) {
@@ -49,29 +53,35 @@ void RemeshBlock(World& world, OpenGLRenderer& renderer, int worldX, int worldY,
     }
 }
 
-// Builds a small rift gate: voidstone frame, portal surface and glowing corner
-// stones. Returns the floor height the player should stand on.
+// Builds the rift gate as an open-air shrine: a paved court with a voidstone
+// frame, a portal surface and glowing corner stones. Returns the court's
+// standing height so the player can be placed in front of it.
 int BuildRiftGate(World& world, int gateX, int gateZ) {
     int baseY = world.SurfaceY(gateX, gateZ);
     if (baseY < 3) baseY = 3;
     const int y = baseY;
 
-    // Carve a pocket so the gate is always reachable.
-    for (int dy = -1; dy <= 5; ++dy) {
-        for (int dz = -3; dz <= 3; ++dz) {
-            for (int dx = -3; dx <= 4; ++dx) {
+    // Paved court. Building upwards keeps the gate visible from the spawn point
+    // instead of tucked into a carved pit you have to walk out of.
+    for (int dz = -7; dz <= 4; ++dz) {
+        for (int dx = -5; dx <= 6; ++dx) {
+            world.SetBlock(gateX + dx, y - 1, gateZ + dz, BlockType::Voidstone);
+            for (int dy = 0; dy <= 6; ++dy) {
                 if (world.GetBlock(gateX + dx, y + dy, gateZ + dz) == BlockType::Bedrock) {
                     continue;
                 }
                 world.SetBlock(gateX + dx, y + dy, gateZ + dz, BlockType::Air);
             }
-        }
-    }
-
-    // Solid floor under the pocket.
-    for (int dz = -3; dz <= 3; ++dz) {
-        for (int dx = -3; dx <= 4; ++dx) {
-            world.SetBlock(gateX + dx, y - 1, gateZ + dz, BlockType::Voidstone);
+            // Support the paving on sloped ground so the court never floats.
+            for (int dy = 2; dy <= 4; ++dy) {
+                const int supportY = y - dy;
+                if (supportY < 0) {
+                    continue;
+                }
+                if (world.GetBlock(gateX + dx, supportY, gateZ + dz) == BlockType::Air) {
+                    world.SetBlock(gateX + dx, supportY, gateZ + dz, BlockType::Stone);
+                }
+            }
         }
     }
 
@@ -108,7 +118,8 @@ bool PlayerInsideRift(const World& world, const Player& player) {
 
 enum class AppState {
     Menu,
-    Playing
+    Playing,
+    Paused
 };
 
 } // namespace
@@ -151,6 +162,7 @@ int main() {
 
     MainMenu menu;
     menu.Reset(hasSave);
+    PauseMenu pauseMenu;
 
     World world;
     std::vector<uint64_t> visibleChunks;
@@ -168,6 +180,9 @@ int main() {
 
     AppState state = AppState::Menu;
     platform->SetCursorCaptured(false);
+
+    float accumulator = 0.0f;
+    double lastTime = platform->GetTime();
 
     auto uploadWorld = [&]() {
         renderer.clearChunks();
@@ -210,12 +225,12 @@ int main() {
                                      : "BlockForge | Upperworld");
     };
 
-    auto placePlayerAtGate = [&](int gateY) {
+    auto placePlayerAtGate = [&](int feetY) {
         player = Player();
-        player.x = static_cast<float>(kGateX - 3) + 0.5f;
-        player.z = static_cast<float>(kGateZ) + 0.5f;
-        player.y = static_cast<float>(gateY) + 1.0f;
-        player.yaw = 0.0f; // face the rift gate
+        player.x = static_cast<float>(kSpawnX) + 0.5f;
+        player.z = static_cast<float>(kSpawnZ) + 0.5f;
+        player.y = static_cast<float>(feetY);
+        player.yaw = kSpawnYaw; // face the rift gate
         player.vx = 0.0f;
         player.vy = 0.0f;
         player.vz = 0.0f;
@@ -263,16 +278,9 @@ int main() {
         const int gateY = BuildRiftGate(world, kGateX, kGateZ);
         uploadWorld();
 
-        // Arrive inside the gate alcove, three blocks in front of the portal.
-        player.x = static_cast<float>(kGateX - 3) + 0.5f;
-        player.z = static_cast<float>(kGateZ) + 0.5f;
-        player.y = static_cast<float>(gateY) + 1.0f;
-        player.vx = 0.0f;
-        player.vy = 0.0f;
-        player.vz = 0.0f;
-        player.onGround = false;
+        // Step out of the rift onto the court, facing the gate.
+        placePlayerAtGate(gateY);
 
-        portalCooldown = 2.0f;
         spawnMobs();
         applyEnvironment();
         updateTitle();
@@ -296,6 +304,7 @@ int main() {
         applyEnvironment();
         updateTitle();
         audio.PlaySound("portal", player.x, player.y, player.z, 0.9f);
+        accumulator = 0.0f;
         state = AppState::Playing;
     };
 
@@ -313,15 +322,21 @@ int main() {
                    " realm=" + DimensionName(world.GetDimension()) +
                    " chunks=" + std::to_string(world.GetChunkCount()));
 
-        const int gateY = BuildRiftGate(world, kGateX, kGateZ);
+        // Do not rebuild the gate on load: the save already holds it, and
+        // carving again would erase anything the player built on the court.
+        int feetY = world.SurfaceY(kSpawnX, kSpawnZ);
+        if (feetY < 2) {
+            feetY = world.SurfaceY(kGateX, kGateZ);
+        }
         uploadWorld();
-        placePlayerAtGate(gateY);
+        placePlayerAtGate(feetY);
         for (size_t i = 0; i < slot.inventory.size() && i < 36; ++i) {
             player.inventory[i] = slot.inventory[i];
         }
         spawnMobs();
         applyEnvironment();
         updateTitle();
+        accumulator = 0.0f;
         state = AppState::Playing;
     };
 
@@ -344,9 +359,6 @@ int main() {
         platform->SwapBuffers();
         platform->PollEvents();
     };
-
-    float accumulator = 0.0f;
-    double lastTime = platform->GetTime();
 
     while (!platform->ShouldQuit()) {
         const double now = platform->GetTime();
@@ -394,10 +406,43 @@ int main() {
             continue;
         }
 
+        // ---- Paused --------------------------------------------------------
+        if (state == AppState::Paused) {
+            const PauseAction action = pauseMenu.Update(input);
+            if (action == PauseAction::Resume) {
+                state = AppState::Playing;
+                platform->SetCursorCaptured(true);
+                accumulator = 0.0f;
+                lastTime = platform->GetTime();
+            } else if (action == PauseAction::SaveAndTitle) {
+                Log::Write("Paused: saving and returning to the title screen");
+                goToMenu();
+            } else if (action == PauseAction::QuitGame) {
+                Log::Write("Paused: quitting");
+                saveWorld();
+                break;
+            }
+
+            if (state == AppState::Paused) {
+                int pauseW = 1280;
+                int pauseH = 720;
+                renderer.viewportSize(pauseW, pauseH);
+                camera.aspect = static_cast<float>(pauseW) /
+                                static_cast<float>(pauseH > 0 ? pauseH : 1);
+                renderer.render(camera, visibleChunks);
+                ui.Clear();
+                pauseMenu.Draw(ui, static_cast<float>(pauseW), static_cast<float>(pauseH));
+                renderer.renderUiVertices(ui.Vertices());
+                platform->SwapBuffers();
+            }
+            continue;
+        }
+
         // ---- Playing -------------------------------------------------------
         if (input.keys[GLFW_KEY_ESCAPE]) {
-            Log::Write("Returning to the menu");
-            goToMenu();
+            state = AppState::Paused;
+            pauseMenu.Reset();
+            platform->SetCursorCaptured(false);
             continue;
         }
 

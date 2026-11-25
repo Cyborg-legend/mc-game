@@ -140,9 +140,11 @@ MenuAction MainMenu::Update(const InputState& input, bool hasSave) {
     return action;
 }
 
-void MainMenu::DrawRow(UiDrawList& ui, float x, float y, float w, float h,
-                       const std::string& label, const std::string& value,
-                       bool selected) const {
+namespace {
+
+void DrawRow(UiDrawList& ui, float x, float y, float w, float h,
+             const std::string& label, const std::string& value,
+             bool selected) {
     const float scale = 2.0f;
     ui.Panel(x, y, w, h, selected ? kFillActive : kFillIdle,
              selected ? kBorderActive : kBorderIdle);
@@ -161,8 +163,8 @@ void MainMenu::DrawRow(UiDrawList& ui, float x, float y, float w, float h,
     }
 }
 
-void MainMenu::DrawButton(UiDrawList& ui, float x, float y, float w, float h,
-                          const std::string& label, bool selected, bool enabled) const {
+void DrawButton(UiDrawList& ui, float x, float y, float w, float h,
+                const std::string& label, bool selected, bool enabled) {
     const float scale = 2.0f;
     const UiColor fill = selected ? kFillActive : kFillIdle;
     const UiColor border = selected ? kBorderActive : kBorderIdle;
@@ -170,6 +172,8 @@ void MainMenu::DrawButton(UiDrawList& ui, float x, float y, float w, float h,
     ui.TextCentered(x + w * 0.5f, y + (h - 7.0f * scale) * 0.5f, scale,
                     label, enabled ? kText : kMuted);
 }
+
+} // namespace
 
 void MainMenu::Draw(UiDrawList& ui, float width, float height, bool hasSave) const {
     ui.Rect(0.0f, 0.0f, width, height, kBackdrop);
@@ -222,4 +226,77 @@ void MainMenu::Draw(UiDrawList& ui, float width, float height, bool hasSave) con
         ui.TextCentered(width * 0.5f, height * 0.89f, 1.4f,
                         "TYPE DIGITS FOR THE SEED   BACKSPACE ERASES   R RANDOMISES", kMuted);
     }
+}
+
+void PauseMenu::Reset() {
+    selection_ = 0;
+    for (bool& key : prevKeys_) {
+        key = false;
+    }
+    // The Escape that opened the pause menu is still held on the next frame;
+    // treat it as already down so it does not instantly resume the game.
+    prevKeys_[GLFW_KEY_ESCAPE] = true;
+}
+
+bool PauseMenu::Pressed(const InputState& input, int key) const {
+    if (key < 0 || key >= INPUT_KEY_COUNT) {
+        return false;
+    }
+    return input.keys[key] && !prevKeys_[key];
+}
+
+PauseAction PauseMenu::Update(const InputState& input) {
+    PauseAction action = PauseAction::None;
+
+    if (Pressed(input, GLFW_KEY_ESCAPE)) {
+        action = PauseAction::Resume;
+    }
+    if (Pressed(input, GLFW_KEY_UP)) {
+        selection_ = (selection_ + 2) % 3;
+    }
+    if (Pressed(input, GLFW_KEY_DOWN)) {
+        selection_ = (selection_ + 1) % 3;
+    }
+    if (Pressed(input, GLFW_KEY_ENTER) || Pressed(input, GLFW_KEY_KP_ENTER)) {
+        if (selection_ == 0) {
+            action = PauseAction::Resume;
+        } else if (selection_ == 1) {
+            action = PauseAction::SaveAndTitle;
+        } else {
+            action = PauseAction::QuitGame;
+        }
+    }
+
+    for (int i = 0; i < INPUT_KEY_COUNT; ++i) {
+        prevKeys_[i] = input.keys[i];
+    }
+    return action;
+}
+
+void PauseMenu::Draw(UiDrawList& ui, float width, float height) const {
+    // Dim the frozen world behind the menu.
+    ui.Rect(0.0f, 0.0f, width, height, { 0.02f, 0.03f, 0.05f, 0.58f });
+
+    const float panelWidth = 400.0f;
+    const float panelHeight = 300.0f;
+    const float panelX = (width - panelWidth) * 0.5f;
+    const float panelY = (height - panelHeight) * 0.5f;
+    ui.Panel(panelX, panelY, panelWidth, panelHeight,
+             { 0.08f, 0.10f, 0.14f, 0.98f }, kBorderActive);
+
+    ui.TextCentered(width * 0.5f, panelY + 24.0f, 3.0f, "PAUSED", kTitle);
+
+    const float buttonWidth = panelWidth - 56.0f;
+    const float buttonHeight = 48.0f;
+    const float buttonX = panelX + 28.0f;
+    float y = panelY + 92.0f;
+
+    DrawButton(ui, buttonX, y, buttonWidth, buttonHeight, "RESUME", selection_ == 0, true);
+    y += buttonHeight + 12.0f;
+    DrawButton(ui, buttonX, y, buttonWidth, buttonHeight, "SAVE & TITLE", selection_ == 1, true);
+    y += buttonHeight + 12.0f;
+    DrawButton(ui, buttonX, y, buttonWidth, buttonHeight, "QUIT GAME", selection_ == 2, true);
+
+    ui.TextCentered(width * 0.5f, panelY + panelHeight - 30.0f, 1.5f,
+                    "UP/DOWN  SELECT     ENTER  CONFIRM     ESC  RESUME", kMuted);
 }
