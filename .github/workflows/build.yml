@@ -82,6 +82,16 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      - name: Configure C build
+        shell: pwsh
+        run: |
+          cmake -B build-c -S blockforge-c `
+            -DCMAKE_PREFIX_PATH="$PWD/glfw_deps;$PWD"
+
+      - name: Build C version
+        shell: pwsh
+        run: cmake --build build-c --config Release --parallel
+
       - name: Upload build
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,3 +100,5 @@ jobs:
           path: |
             build/Release/blockforge.exe
             build/Release/*.dll
+            build-c/Release/blockforge-c.exe
+            build-c/Release/*.dll
