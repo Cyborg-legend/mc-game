@@ -52,6 +52,8 @@ void renderer_get_size(BgRenderer *renderer, int *width, int *height);
 void ui_clear(BgUi *ui);
 void ui_free(BgUi *ui);
 void ui_rect(BgUi *ui, float x, float y, float w, float h, const float color[4]);
+void ui_tile_texture(BgUi *ui, float x, float y, float width, float height, int tile,
+                     float cell, float shade, float alpha);
 void ui_text(BgUi *ui, float x, float y, float scale, const char *text, const float color[4]);
 void ui_text_centered(BgUi *ui, float center_x, float y, float scale, const char *text,
                       const float color[4]);

@@ -104,10 +104,6 @@ size_t world_chunk_count(const World *world);
 /* Open, dry ground near the origin, where a fresh Upperworld begins. */
 void world_spawn_site(const World *world, int *spawn_x, int *spawn_z);
 
-/* Seed-derived shrine site, well away from the spawn so the rift has to be
- * found by exploring instead of standing on the doorstep. */
-void world_gate_site(const World *world, int *gate_x, int *gate_z);
-
 /* Iteration order is unspecified; entries stay valid until the world mutates. */
 typedef struct WorldIter {
     World *world;
@@ -116,14 +112,24 @@ typedef struct WorldIter {
 
 Chunk *world_iter_next(WorldIter *iter);
 
-/* ---- Rift gate ------------------------------------------------------- */
+/* ---- Rift ------------------------------------------------------------ */
 
-/* Feet height of a standing gate, -1 when there is none. */
-int find_rift_gate_y(const World *world, int gate_x, int gate_z);
+typedef enum {
+    RIFT_NO_FRAME = 0,
+    RIFT_OPENED,
+    RIFT_ALREADY_OPEN
+} RiftFire;
 
-/* Builds the shrine only when it is missing; an existing gate (or a gate with
- * a broken portal) is repaired in place instead of re-carved. */
-int build_rift_gate(World *world, int gate_x, int gate_z);
+/* Locates the 4x5 voidstone frame around a block (a frame block or a block in
+ * its opening) and reports its minimum corner and axis (0 = along X, 1 = along Z). */
+bool rift_frame_at(const World *world, int x, int y, int z, int *cx, int *cy, int *cz,
+                   int *axis);
+
+/* Fills a complete frame's 2x3 opening with portal blocks. */
+RiftFire rift_ignite(World *world, int x, int y, int z, int *cx, int *cy, int *cz, int *axis);
+
+/* Carves and builds a lit twin frame at a known corner, used for the far side. */
+void rift_build(World *world, int cx, int cy, int cz, int axis);
 
 /* ---- Items and inventory --------------------------------------------- */
 

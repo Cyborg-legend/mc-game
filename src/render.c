@@ -501,6 +501,71 @@ static void paint_pixel(const TileDef *def, int tile, int px, int py, unsigned c
 /* Kept after upload so the hotbar can show the real block faces as icons. */
 static unsigned char g_atlas_pixels[ATLAS_WIDTH * ATLAS_HEIGHT * 4];
 
+/* ------------------------------------------------------------- item tiles */
+
+/* Items are not blocks, so they get their own 32x32 tiles: an 8x8 pixel-art
+ * sprite scaled 4x with a transparent background the hotbar lets through. */
+#define ITEM_TILE_BASE 32
+#define ITEM_TILE_COUNT 4
+
+typedef struct {
+    const char *rows[8];
+    unsigned char palette[4][3];
+} ItemArt;
+
+static const ItemArt kItemArt[ITEM_TILE_COUNT] = {
+    {   /* stick */
+        { "......12", ".....123", "....123.", "...123..",
+          "..123...", ".123....", "123.....", "12......" },
+        { {  92,  64,  34 }, { 150, 112,  64 }, { 198, 162, 106 }, {   0,   0,   0 } }
+    },
+    {   /* ember shard */
+        { "...11...", "..1221..", "..1321..", ".123321.",
+          ".123321.", "..1331..", "...11...", "........" },
+        { {  86,  28,  10 }, { 222, 110,  30 }, { 255, 214, 120 }, {   0,   0,   0 } }
+    },
+    {   /* ash dust */
+        { "....3...", "........", ".3......", "....2...",
+          "..1221..", ".122221.", "12222221", "11111111" },
+        { {  78,  76,  74 }, { 150, 146, 140 }, { 214, 210, 204 }, {   0,   0,   0 } }
+    },
+    {   /* meat */
+        { "..111...", ".12421..", ".122221.", ".122221.",
+          "..12221.", ".3322...", "333.....", "33......" },
+        { { 116,  30,  30 }, { 196,  64,  64 }, { 232, 226, 204 }, { 226, 120, 110 } }
+    }
+};
+
+static void paint_item_tile(unsigned char *pixels, int index) {
+    const ItemArt *art = &kItemArt[index];
+    const int tile = ITEM_TILE_BASE + index;
+    const int origin_x = (tile % ATLAS_COLS) * ATLAS_TILE;
+    const int origin_y = (tile / ATLAS_COLS) * ATLAS_TILE;
+    const int scale = ATLAS_TILE / 8;
+
+    for (int py = 0; py < ATLAS_TILE; ++py) {
+        const char *row = art->rows[py / scale];
+        for (int px = 0; px < ATLAS_TILE; ++px) {
+            const char code = row[px / scale];
+            unsigned char *p =
+                &pixels[((origin_y + py) * ATLAS_WIDTH + origin_x + px) * 4];
+            if (code < '1' || code > '4') {
+                p[0] = 0;
+                p[1] = 0;
+                p[2] = 0;
+                p[3] = 0;
+                continue;
+            }
+            const unsigned char *rgb = art->palette[code - '1'];
+            const float shade = 0.94f + pixel_noise(tile, px / 2, py / 2) * 0.12f;
+            p[0] = clamp255((float)rgb[0] * shade);
+            p[1] = clamp255((float)rgb[1] * shade);
+            p[2] = clamp255((float)rgb[2] * shade);
+            p[3] = 255;
+        }
+    }
+}
+
 static GLuint build_atlas(void) {
     unsigned char *pixels = g_atlas_pixels;
 
@@ -530,6 +595,10 @@ static GLuint build_atlas(void) {
                 p[3] = 255;
             }
         }
+    }
+
+    for (int item = 0; item < ITEM_TILE_COUNT; ++item) {
+        paint_item_tile(pixels, item);
     }
 
     GLuint texture = 0;
@@ -881,6 +950,52 @@ void ui_rect(BgUi *ui, float x, float y, float w, float h, const float color[4])
     ui->floats += 6 * 6;
 }
 
+/* Tiles an atlas texture across a rectangle with 4x4 colour samples per cell.
+ * Used for the dirt menu backdrop, so menus share the world's real pixels. */
+void ui_tile_texture(BgUi *ui, float x, float y, float width, float height, int tile,
+                     float cell, float shade, float alpha) {
+    const int origin_x = (tile % ATLAS_COLS) * ATLAS_TILE;
+    const int origin_y = (tile / ATLAS_COLS) * ATLAS_TILE;
+    const int cells = 4;
+    const int span = ATLAS_TILE / cells;
+    const float step = cell / (float)cells;
+    const int cols = (int)ceilf(width / cell);
+    const int rows = (int)ceilf(height / cell);
+    const float inv = shade / (float)(span * span * 255);
+
+    for (int ty = 0; ty < rows; ++ty) {
+        for (int tx = 0; tx < cols; ++tx) {
+            for (int iy = 0; iy < cells; ++iy) {
+                for (int ix = 0; ix < cells; ++ix) {
+                    int sum[3] = { 0, 0, 0 };
+                    for (int py = 0; py < span; ++py) {
+                        for (int px = 0; px < span; ++px) {
+                            const unsigned char *src = &g_atlas_pixels[
+                                ((origin_y + iy * span + py) * ATLAS_WIDTH + origin_x +
+                                 ix * span + px) * 4];
+                            sum[0] += src[0];
+                            sum[1] += src[1];
+                            sum[2] += src[2];
+                        }
+                    }
+                    const float px0 = x + (float)tx * cell + (float)ix * step;
+                    const float py0 = y + (float)ty * cell + (float)iy * step;
+                    float pw = step + 0.6f;
+                    float ph = step + 0.6f;
+                    if (px0 + pw > x + width) pw = x + width - px0;
+                    if (py0 + ph > y + height) ph = y + height - py0;
+                    if (pw <= 0.0f || ph <= 0.0f) {
+                        continue;
+                    }
+                    const float color[4] = { (float)sum[0] * inv, (float)sum[1] * inv,
+                                             (float)sum[2] * inv, alpha };
+                    ui_rect(ui, px0, py0, pw, ph, color);
+                }
+            }
+        }
+    }
+}
+
 /* 5x7 bitmap font; bit n of a column is the pixel on row n (0 = top). */
 typedef struct {
     char code;
@@ -1141,26 +1256,38 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
     renderer->draw_calls++;
 }
 
-/* A 4x4 downsample of the block's top face, so the hotbar shows the same
- * pixels the world does instead of one flat colour. */
+/* The atlas tile a hotbar slot shows: the block's top face, or an item sprite. */
+static int item_icon_tile(uint16_t item) {
+    if (item < BG_BLOCK_COUNT) {
+        return block_tile((BlockId)item, 2);
+    }
+    if (item >= BG_ITEM_STICK && item < BG_ITEM_COUNT) {
+        return ITEM_TILE_BASE + (int)(item - BG_ITEM_STICK);
+    }
+    return -1;
+}
+
+/* Samples the atlas (8x8 cells) so the hotbar shows the same pixels the world
+ * does, with the transparent corners of item sprites left alone. */
 static void draw_item_icon(BgUi *ui, uint16_t item, float x, float y, float size,
                            float alpha) {
-    float rgb[3] = { 0.30f, 0.30f, 0.32f };
-    item_color(item, rgb);
-    if (item >= BG_BLOCK_COUNT) {
+    const int tile = item_icon_tile(item);
+    if (tile < 0) {
+        float rgb[3] = { 0.30f, 0.30f, 0.32f };
+        item_color(item, rgb);
         const float flat[4] = { rgb[0], rgb[1], rgb[2], alpha };
         ui_rect(ui, x, y, size, size, flat);
         return;
     }
 
-    const int tile = block_tile((BlockId)item, 2);
     const int origin_x = (tile % ATLAS_COLS) * ATLAS_TILE;
     const int origin_y = (tile / ATLAS_COLS) * ATLAS_TILE;
-    const int cell = ATLAS_TILE / 4;
-    const float step = size / 4.0f;
-    for (int iy = 0; iy < 4; ++iy) {
-        for (int ix = 0; ix < 4; ++ix) {
-            int sum[3] = { 0, 0, 0 };
+    const int cells = 8;
+    const int cell = ATLAS_TILE / cells;
+    const float step = size / (float)cells;
+    for (int iy = 0; iy < cells; ++iy) {
+        for (int ix = 0; ix < cells; ++ix) {
+            int sum[4] = { 0, 0, 0, 0 };
             for (int py = 0; py < cell; ++py) {
                 for (int px = 0; px < cell; ++px) {
                     const unsigned char *src =
@@ -1169,13 +1296,49 @@ static void draw_item_icon(BgUi *ui, uint16_t item, float x, float y, float size
                     sum[0] += src[0];
                     sum[1] += src[1];
                     sum[2] += src[2];
+                    sum[3] += src[3];
                 }
             }
-            const float samples = (float)(cell * cell) * 255.0f;
-            const float color[4] = { (float)sum[0] / samples, (float)sum[1] / samples,
-                                     (float)sum[2] / samples, alpha };
+            const float cover = (float)sum[3] / (float)(cell * cell * 255);
+            if (cover < 0.4f) {
+                continue;
+            }
+            const float weight = (float)sum[3] / 255.0f;
+            const float color[4] = { (float)sum[0] / weight / 255.0f,
+                                     (float)sum[1] / weight / 255.0f,
+                                     (float)sum[2] / weight / 255.0f,
+                                     alpha * cover };
             ui_rect(ui, x + (float)ix * step, y + (float)iy * step, step + 0.5f,
                     step + 0.5f, color);
+        }
+    }
+}
+
+static const char *const kHeartArt[7] = {
+    ".11.11.",
+    "1111111",
+    "1111111",
+    ".11111.",
+    "..111..",
+    "...1...",
+    "......."
+};
+
+static void draw_heart(BgUi *ui, float x, float y, float pixel, bool full) {
+    const float shadow[4] = { 0.10f, 0.02f, 0.02f, 0.95f };
+    const float color[4] = { full ? 0.90f : 0.26f, full ? 0.16f : 0.12f,
+                             full ? 0.18f : 0.14f, 1.0f };
+    for (int pass = 0; pass < 2; ++pass) {
+        const float offset = pass == 0 ? pixel : 0.0f;
+        const float *tint = pass == 0 ? shadow : color;
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 7; ++col) {
+                if (kHeartArt[row][col] != '1') {
+                    continue;
+                }
+                ui_rect(ui, x + (float)col * pixel + offset,
+                        y + (float)row * pixel + offset, pixel, pixel, tint);
+            }
         }
     }
 }
@@ -1190,54 +1353,68 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
     BgUi ui;
     memset(&ui, 0, sizeof(ui));
 
-    const float white[4] = { 1.0f, 1.0f, 1.0f, 0.85f };
+    const float cross_shadow[4] = { 0.05f, 0.05f, 0.06f, 0.55f };
+    ui_rect(&ui, w * 0.5f - 11.0f, h * 0.5f, 22.0f, 2.0f, cross_shadow);
+    ui_rect(&ui, w * 0.5f, h * 0.5f - 11.0f, 2.0f, 22.0f, cross_shadow);
+    const float white[4] = { 1.0f, 1.0f, 1.0f, 0.92f };
     ui_rect(&ui, w * 0.5f - 10.0f, h * 0.5f - 1.0f, 20.0f, 2.0f, white);
     ui_rect(&ui, w * 0.5f - 1.0f, h * 0.5f - 10.0f, 2.0f, 20.0f, white);
 
-    const float slot = 44.0f;
-    const float gap = 4.0f;
+    const float slot = 42.0f;
+    const float gap = 2.0f;
     const float total = 9.0f * slot + 8.0f * gap;
     const float bar_x = (w - total) * 0.5f;
     const float bar_y = h - slot - 18.0f;
 
+    const float edge[4] = { 0.04f, 0.04f, 0.05f, 0.90f };
+    ui_rect(&ui, bar_x - 8.0f, bar_y - 8.0f, total + 16.0f, slot + 16.0f, edge);
+    const float panel[4] = { 0.30f, 0.30f, 0.31f, 0.94f };
+    ui_rect(&ui, bar_x - 6.0f, bar_y - 6.0f, total + 12.0f, slot + 12.0f, panel);
+    const float inner[4] = { 0.09f, 0.09f, 0.10f, 0.96f };
+    ui_rect(&ui, bar_x - 4.0f, bar_y - 4.0f, total + 8.0f, slot + 8.0f, inner);
+
     for (int i = 0; i < 9; ++i) {
         const float x = bar_x + (float)i * (slot + gap);
         const bool selected = (i == player->selected);
-        const float frame[4] = { selected ? 1.0f : 0.20f, selected ? 1.0f : 0.20f,
-                                 selected ? 1.0f : 0.24f, selected ? 0.95f : 0.80f };
-        ui_rect(&ui, x - 3.0f, bar_y - 3.0f, slot + 6.0f, slot + 6.0f, frame);
-
-        const float inner[4] = { 0.04f, 0.04f, 0.05f, 0.85f };
-        ui_rect(&ui, x, bar_y, slot, slot, inner);
+        const float cell_color[4] = { 0.14f, 0.14f, 0.15f, 0.95f };
+        ui_rect(&ui, x, bar_y, slot, slot, cell_color);
 
         const BgStack *stack = &player->inventory[i];
         if (stack->count > 0) {
-            draw_item_icon(&ui, stack->item, x + 5.0f, bar_y + 5.0f, slot - 10.0f, 0.95f);
-        } else {
-            const float empty[4] = { 0.08f, 0.08f, 0.10f, 0.55f };
-            ui_rect(&ui, x + 5.0f, bar_y + 5.0f, slot - 10.0f, slot - 10.0f, empty);
+            draw_item_icon(&ui, stack->item, x + 4.0f, bar_y + 4.0f, slot - 8.0f, 0.98f);
         }
-
+        if (selected) {
+            const float frame[4] = { 0.98f, 0.98f, 0.94f, 0.95f };
+            ui_rect(&ui, x - 2.0f, bar_y - 2.0f, slot + 4.0f, 2.0f, frame);
+            ui_rect(&ui, x - 2.0f, bar_y + slot, slot + 4.0f, 2.0f, frame);
+            ui_rect(&ui, x - 2.0f, bar_y - 2.0f, 2.0f, slot + 4.0f, frame);
+            ui_rect(&ui, x + slot, bar_y - 2.0f, 2.0f, slot + 4.0f, frame);
+        }
         if (stack->count > 1) {
-            char count_text[8];
-            snprintf(count_text, sizeof(count_text), "%u", (unsigned)stack->count);
-            const float count_color[4] = { 1.0f, 1.0f, 1.0f, 0.95f };
-            ui_text(&ui, x + slot - ui_text_width(count_text, 1.2f) - 3.0f,
-                    bar_y + slot - 10.0f, 1.2f, count_text, count_color);
+            char text[8];
+            snprintf(text, sizeof(text), "%u", (unsigned)stack->count);
+            const float shadow[4] = { 0.05f, 0.05f, 0.06f, 0.90f };
+            const float count_color[4] = { 1.0f, 1.0f, 1.0f, 0.98f };
+            ui_text(&ui, x + slot - 1.0f - ui_text_width(text, 1.6f),
+                    bar_y + slot - 11.0f, 1.6f, text, shadow);
+            ui_text(&ui, x + slot - 2.0f - ui_text_width(text, 1.6f),
+                    bar_y + slot - 12.0f, 1.6f, text, count_color);
         }
+    }
+
+    for (int i = 0; i < 10; ++i) {
+        draw_heart(&ui, bar_x + (float)i * 20.0f, bar_y - 30.0f, 2.0f,
+                   player->health > i * 2);
     }
 
     const BgStack *held = &player->inventory[player->selected];
     if (held->count > 0) {
-        const float name_color[4] = { 0.92f, 0.94f, 1.0f, 0.85f };
-        ui_text_centered(&ui, w * 0.5f, bar_y - 26.0f, 1.6f, item_name(held->item), name_color);
-    }
-
-    for (int i = 0; i < 10; ++i) {
-        const bool full = player->health > i * 2;
-        const float heart[4] = { full ? 0.86f : 0.28f, full ? 0.16f : 0.12f,
-                                 full ? 0.20f : 0.14f, 0.95f };
-        ui_rect(&ui, 20.0f + (float)i * 22.0f, h - 44.0f, 16.0f, 16.0f, heart);
+        const float name_color[4] = { 0.96f, 0.96f, 0.92f, 0.92f };
+        const float name_shadow[4] = { 0.06f, 0.06f, 0.07f, 0.85f };
+        ui_text_centered(&ui, w * 0.5f + 1.5f, bar_y - 54.5f, 1.8f, item_name(held->item),
+                         name_shadow);
+        ui_text_centered(&ui, w * 0.5f, bar_y - 56.0f, 1.8f, item_name(held->item),
+                         name_color);
     }
 
     renderer_draw_ui(renderer, &ui);

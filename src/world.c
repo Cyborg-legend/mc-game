@@ -468,7 +468,7 @@ int world_surface_y(const World *world, int x, int z) {
 /* ----------------------------------------------------------- world sites */
 
 /* Walks outward from an angle until the terrain there stands clear of the sea,
- * so neither the first spawn nor the shrine is ever carved under water. */
+ * so the first spawn is never carved under water. */
 static bool find_dry_site(const World *world, float angle, int start_distance, int step,
                           int *out_x, int *out_z) {
     int distance = start_distance;
@@ -493,109 +493,126 @@ void world_spawn_site(const World *world, int *spawn_x, int *spawn_z) {
     (void)find_dry_site(world, 0.6f, 0, 6, spawn_x, spawn_z);
 }
 
-void world_gate_site(const World *world, int *gate_x, int *gate_z) {
-    /* 120 to 180 blocks out: far enough to be a landmark rather than a starting
-     * view, close enough to stumble across while exploring. */
-    const uint32_t h = hash_u32((uint32_t)world->seed * 2654435761u + 0x165667b1u);
-    const float angle = ((float)(h & 0xFFFFu) / 65535.0f) * 6.28318530718f;
-    const int distance = 120 + (int)((h >> 16) % 61u);
-    if (!find_dry_site(world, angle, distance, 9, gate_x, gate_z)) {
-        *gate_x = 128;
-        *gate_z = 0;
-    }
-}
+/* ------------------------------------------------------------ rift frame */
 
-/* ------------------------------------------------------------ rift gate */
-
-int find_rift_gate_y(const World *world, int gate_x, int gate_z) {
-    for (int y = 0; y < UNDERWORLD_TOP; ++y) {
-        for (int dx = -1; dx <= 2; ++dx) {
-            for (int dz = -1; dz <= 1; ++dz) {
-                if (world_get_block(world, gate_x + dx, y, gate_z + dz) == BG_PORTAL) {
-                    return y;
-                }
-            }
-        }
-    }
-    return -1;
-}
-
-/* The glowing corner stones are unique to the shrine, so they identify a gate
- * whose portal surface was broken. */
-static int find_gate_frame_y(const World *world, int gate_x, int gate_z) {
-    for (int y = 2; y + 1 < UNDERWORLD_TOP; ++y) {
-        if (world_get_block(world, gate_x - 1, y, gate_z) == BG_LUMENSTONE &&
-            world_get_block(world, gate_x + 2, y, gate_z) == BG_LUMENSTONE) {
-            return y - 2;
-        }
-    }
-    return -1;
-}
-
-static void build_portal_surface(World *world, int gate_x, int gate_z, int feet_y) {
-    for (int dy = 0; dy < 3; ++dy) {
-        world_set_block(world, gate_x, feet_y + dy, gate_z, BG_PORTAL);
-        world_set_block(world, gate_x + 1, feet_y + dy, gate_z, BG_PORTAL);
-    }
-}
-
-int build_rift_gate(World *world, int gate_x, int gate_z) {
-    const int existing = find_rift_gate_y(world, gate_x, gate_z);
-    if (existing >= 0) {
-        return existing;
-    }
-
-    /* A standing shrine with a broken portal is repaired in place: re-carving
-     * here would erase whatever the player built on the court. */
-    const int frame_y = find_gate_frame_y(world, gate_x, gate_z);
-    if (frame_y >= 0) {
-        build_portal_surface(world, gate_x, gate_z, frame_y);
-        return frame_y;
-    }
-
-    int base_y = world_surface_y(world, gate_x, gate_z);
-    if (base_y < 3) {
-        base_y = 3;
-    }
-    const int y = base_y;
-
-    /* Paved court so the gate stands in the open instead of in a pit. */
-    for (int dz = -7; dz <= 4; ++dz) {
-        for (int dx = -5; dx <= 6; ++dx) {
-            world_set_block(world, gate_x + dx, y - 1, gate_z + dz, BG_VOIDSTONE);
-            for (int dy = 0; dy <= 6; ++dy) {
-                if (world_get_block(world, gate_x + dx, y + dy, gate_z + dz) == BG_BEDROCK) {
+/* A rift frame is a 4x5 rectangle of voidstone standing upright along the X or
+ * Z axis. Its 2x3 opening holds the portal blocks. As with a classic portal,
+ * the four corner blocks are decorative and not required. */
+static bool rift_ring_ok(const World *world, int cx, int cy, int cz, int axis, bool *lit) {
+    bool all_lit = true;
+    for (int dy = 0; dy < 5; ++dy) {
+        for (int d = 0; d < 4; ++d) {
+            const bool edge_y = (dy == 0 || dy == 4);
+            const bool edge_d = (d == 0 || d == 3);
+            const int x = axis == 0 ? cx + d : cx;
+            const int z = axis == 0 ? cz : cz + d;
+            const BlockId block = world_get_block(world, x, cy + dy, z);
+            if (edge_y || edge_d) {
+                if (edge_y && edge_d) {
                     continue;
                 }
-                world_set_block(world, gate_x + dx, y + dy, gate_z + dz, BG_AIR);
-            }
-            for (int dy = 2; dy <= 4; ++dy) {
-                const int support_y = y - dy;
-                if (support_y < 0) {
-                    continue;
+                if (block != BG_VOIDSTONE) {
+                    return false;
                 }
-                if (world_get_block(world, gate_x + dx, support_y, gate_z + dz) == BG_AIR) {
-                    world_set_block(world, gate_x + dx, support_y, gate_z + dz, BG_STONE);
+            } else if (block == BG_PORTAL) {
+                continue;
+            } else if (block != BG_AIR) {
+                return false;
+            } else {
+                all_lit = false;
+            }
+        }
+    }
+    if (lit) {
+        *lit = all_lit;
+    }
+    return true;
+}
+
+static bool rift_find(const World *world, int x, int y, int z, int *out_cx, int *out_cy,
+                      int *out_cz, int *out_axis, bool *lit) {
+    for (int axis = 0; axis < 2; ++axis) {
+        for (int ay = y - 4; ay <= y; ++ay) {
+            for (int d = 0; d < 4; ++d) {
+                const int cx = axis == 0 ? x - d : x;
+                const int cz = axis == 0 ? z : z - d;
+                bool frame_lit = false;
+                if (rift_ring_ok(world, cx, ay, cz, axis, &frame_lit)) {
+                    *out_cx = cx;
+                    *out_cy = ay;
+                    *out_cz = cz;
+                    *out_axis = axis;
+                    if (lit) {
+                        *lit = frame_lit;
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool rift_frame_at(const World *world, int x, int y, int z, int *cx, int *cy, int *cz,
+                   int *axis) {
+    bool lit = false;
+    return rift_find(world, x, y, z, cx, cy, cz, axis, &lit);
+}
+
+RiftFire rift_ignite(World *world, int x, int y, int z, int *cx, int *cy, int *cz, int *axis) {
+    bool lit = false;
+    if (!rift_find(world, x, y, z, cx, cy, cz, axis, &lit)) {
+        return RIFT_NO_FRAME;
+    }
+    if (lit) {
+        return RIFT_ALREADY_OPEN;
+    }
+    for (int iy = 1; iy <= 3; ++iy) {
+        for (int id = 1; id <= 2; ++id) {
+            const int bx = *axis == 0 ? *cx + id : *cx;
+            const int bz = *axis == 0 ? *cz : *cz + id;
+            world_set_block(world, bx, *cy + iy, bz, BG_PORTAL);
+        }
+    }
+    return RIFT_OPENED;
+}
+
+void rift_build(World *world, int cx, int cy, int cz, int axis) {
+    /* Clear a shell around the gate first, since the twin side of a rift can
+     * sit inside solid rock. Bedrock is left alone. */
+    for (int dy = -1; dy <= 5; ++dy) {
+        for (int d = -1; d <= 4; ++d) {
+            for (int side = -1; side <= 1; ++side) {
+                const int x = axis == 0 ? cx + d : cx + side;
+                const int z = axis == 0 ? cz + side : cz + d;
+                if (world_get_block(world, x, cy + dy, z) != BG_BEDROCK) {
+                    world_set_block(world, x, cy + dy, z, BG_AIR);
                 }
             }
         }
     }
 
-    for (int dy = -1; dy <= 3; ++dy) {
-        world_set_block(world, gate_x - 1, y + dy, gate_z, BG_VOIDSTONE);
-        world_set_block(world, gate_x + 2, y + dy, gate_z, BG_VOIDSTONE);
+    for (int dy = 0; dy < 5; ++dy) {
+        for (int d = 0; d < 4; ++d) {
+            const int x = axis == 0 ? cx + d : cx;
+            const int z = axis == 0 ? cz : cz + d;
+            const bool edge = (dy == 0 || dy == 4 || d == 0 || d == 3);
+            world_set_block(world, x, cy + dy, z, edge ? BG_VOIDSTONE : BG_PORTAL);
+        }
     }
-    for (int dx = -1; dx <= 2; ++dx) {
-        world_set_block(world, gate_x + dx, y - 1, gate_z, BG_VOIDSTONE);
-        world_set_block(world, gate_x + dx, y + 3, gate_z, BG_VOIDSTONE);
+
+    /* A paved footing so the gate never hangs over a drop or a lava sea. */
+    if (cy > 0) {
+        for (int d = -1; d <= 4; ++d) {
+            for (int side = -1; side <= 1; ++side) {
+                const int x = axis == 0 ? cx + d : cx + side;
+                const int z = axis == 0 ? cz + side : cz + d;
+                if (world_get_block(world, x, cy - 1, z) == BG_AIR) {
+                    world_set_block(world, x, cy - 1, z, BG_CINDERBRICK);
+                }
+            }
+        }
     }
-
-    build_portal_surface(world, gate_x, gate_z, y);
-
-    world_set_block(world, gate_x - 1, y + 2, gate_z, BG_LUMENSTONE);
-    world_set_block(world, gate_x + 2, y + 2, gate_z, BG_LUMENSTONE);
-
-    return y;
 }
 
 /* ------------------------------------------------------------- atlas ids */

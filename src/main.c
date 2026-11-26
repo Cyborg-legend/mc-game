@@ -12,13 +12,13 @@
 #define RENDER_RADIUS 5
 #define MAX_TRACKED_COLUMNS 2048
 #define EYE_HEIGHT 1.62f
-#define GATE_SIGHT 88.0f
 #define MOUSE_SENSITIVITY 0.0022f
 #define FIELD_OF_VIEW 1.2217305f
 
 typedef enum {
     STATE_TITLE,
     STATE_CREATE,
+    STATE_LOADING,
     STATE_PLAYING,
     STATE_PAUSED
 } AppState;
@@ -35,11 +35,14 @@ typedef struct App {
     int create_choice;
     char seed_text[20];
     Dimension create_dimension;
+    bool loading;
+    Dimension loading_dimension;
+    int loading_center_x, loading_center_z;
+    int loading_radius;
+    int loading_cursor, loading_total;
     uint64_t tracked[MAX_TRACKED_COLUMNS];
     size_t tracked_count;
     int last_cx, last_cz;
-    int gate_x, gate_z;
-    bool gate_built;
     bool has_save;
     bool travel_armed;
     BgMobWorld mobs;
@@ -161,43 +164,48 @@ static void reset_streaming(App *app) {
     app->last_cz = 0x7FFFFFF;
 }
 
-static void place_at_gate(App *app, int feet_y) {
+/* Stands the player just outside a rift's opening, facing the frame. */
+static void place_at_rift(App *app, int cx, int cy, int cz, int axis) {
     app->player.vx = app->player.vy = app->player.vz = 0.0f;
-    app->player.x = (float)app->gate_x + 0.5f;
-    app->player.z = (float)app->gate_z - 6.0f;
-    app->player.y = feet_y > 2 ? (float)feet_y : 40.0f;
-    app->player.yaw = 1.5707963f;
+    if (axis == 0) {
+        app->player.x = (float)cx + 1.5f;
+        app->player.z = (float)cz - 2.5f;
+        app->player.yaw = 1.5707963f;
+    } else {
+        app->player.x = (float)cx - 2.5f;
+        app->player.z = (float)cz + 1.5f;
+        app->player.yaw = 0.0f;
+    }
+    app->player.y = (float)cy;
     app->player.pitch = 0.0f;
 }
 
 static void respawn(App *app) {
     app->player.health = 20;
     app->player.invuln = 1.5f;
+    app->player.vx = app->player.vy = app->player.vz = 0.0f;
     if (app->world.dimension == BG_UNDERWORLD) {
-        int gate_y = find_rift_gate_y(&app->world, app->gate_x, app->gate_z);
-        if (gate_y < 2) {
-            gate_y = world_surface_y(&app->world, app->gate_x, app->gate_z - 6);
-        }
-        place_at_gate(app, gate_y);
-        set_toast(app, "The rift pulls you back.");
-    } else {
-        int spawn_x = 0;
-        int spawn_z = 0;
-        world_spawn_site(&app->world, &spawn_x, &spawn_z);
-        if (!world_chunk(&app->world, spawn_x / CHUNK_SIZE, 0, spawn_z / CHUNK_SIZE, false)) {
-            world_generate_around(&app->world, spawn_x / CHUNK_SIZE, spawn_z / CHUNK_SIZE, 0);
-        }
-        app->player.vx = app->player.vy = app->player.vz = 0.0f;
-        app->player.x = (float)spawn_x + 0.5f;
-        app->player.z = (float)spawn_z + 0.5f;
-        app->player.y = (float)world_surface_y(&app->world, spawn_x, spawn_z);
-        if (app->player.y < 2.0f) {
-            app->player.y = 40.0f;
-        }
-        app->player.yaw = 1.5707963f;
-        app->player.pitch = 0.0f;
-        set_toast(app, "You wake at the spawn.");
+        /* There is no camp in the rift realm, so the player comes to on the spot
+         * where they fell instead of being pushed inside solid rock. */
+        set_toast(app, "You come to where you fell.");
+        mobs_clear(&app->mobs);
+        return;
     }
+    int spawn_x = 0;
+    int spawn_z = 0;
+    world_spawn_site(&app->world, &spawn_x, &spawn_z);
+    if (!world_chunk(&app->world, spawn_x / CHUNK_SIZE, 0, spawn_z / CHUNK_SIZE, false)) {
+        world_generate_around(&app->world, spawn_x / CHUNK_SIZE, spawn_z / CHUNK_SIZE, 0);
+    }
+    app->player.x = (float)spawn_x + 0.5f;
+    app->player.z = (float)spawn_z + 0.5f;
+    app->player.y = (float)world_surface_y(&app->world, spawn_x, spawn_z);
+    if (app->player.y < 2.0f) {
+        app->player.y = 40.0f;
+    }
+    app->player.yaw = 1.5707963f;
+    app->player.pitch = 0.0f;
+    set_toast(app, "You wake at the spawn.");
     mobs_clear(&app->mobs);
     reset_streaming(app);
     stream_around_player(app);
@@ -287,36 +295,64 @@ static void remesh_near(App *app, int x, int y, int z) {
     }
 }
 
-static void resolve_gate(App *app) {
-    world_gate_site(&app->world, &app->gate_x, &app->gate_z);
-    app->gate_built = false;
-}
-
-static void spawn_in_world(App *app, Dimension dimension, GLFWwindow *window) {
+/* Starts a brand-new world but leaves the generation to update_loading, which
+ * spreads it over frames behind a loading screen. */
+static void begin_loading(App *app, Dimension dimension) {
     world_clear(&app->world);
     world_set_dimension(&app->world, dimension);
     renderer_set_environment(&app->renderer, dimension);
-    resolve_gate(app);
     player_init(&app->player);
     reset_streaming(app);
 
     if (dimension == BG_UNDERWORLD) {
-        /* The Underworld is the rift realm, so its twin shrine is the landing
-         * site. An Upperworld begins as untouched wilderness instead. */
-        world_generate_around(&app->world, app->gate_x / CHUNK_SIZE,
-                              app->gate_z / CHUNK_SIZE, RENDER_RADIUS + 1);
-        const int gate_y = build_rift_gate(&app->world, app->gate_x, app->gate_z);
-        app->gate_built = true;
-        place_at_gate(app, gate_y);
+        app->loading_center_x = 0;
+        app->loading_center_z = 0;
     } else {
-        int spawn_x = 0;
-        int spawn_z = 0;
-        world_spawn_site(&app->world, &spawn_x, &spawn_z);
-        world_generate_around(&app->world, spawn_x / CHUNK_SIZE, spawn_z / CHUNK_SIZE,
-                              RENDER_RADIUS + 1);
-        app->player.x = (float)spawn_x + 0.5f;
-        app->player.z = (float)spawn_z + 0.5f;
-        app->player.y = (float)world_surface_y(&app->world, spawn_x, spawn_z);
+        world_spawn_site(&app->world, &app->loading_center_x, &app->loading_center_z);
+    }
+    app->loading_dimension = dimension;
+    app->loading_radius = RENDER_RADIUS + 1;
+    const int span = app->loading_radius * 2 + 1;
+    app->loading_total = span * span;
+    app->loading_cursor = 0;
+    app->loading = true;
+    app->state = STATE_LOADING;
+}
+
+static void update_loading(App *app, GLFWwindow *window) {
+    if (!app->loading) {
+        return;
+    }
+
+    const int span = app->loading_radius * 2 + 1;
+    const int cx0 = app->loading_center_x / CHUNK_SIZE - app->loading_radius;
+    const int cz0 = app->loading_center_z / CHUNK_SIZE - app->loading_radius;
+    int budget = 4;
+    while (budget-- > 0 && app->loading_cursor < app->loading_total) {
+        const int cx = cx0 + app->loading_cursor % span;
+        const int cz = cz0 + app->loading_cursor / span;
+        world_generate_around(&app->world, cx, cz, 0);
+        app->loading_cursor++;
+    }
+    if (app->loading_cursor < app->loading_total) {
+        return;
+    }
+
+    app->loading = false;
+    if (app->loading_dimension == BG_UNDERWORLD) {
+        /* Arriving in the rift realm means the twin gate came along; it is also
+         * the only way back out of a world that starts here. */
+        int surface = world_surface_y(&app->world, 0, 0);
+        if (surface < 2) {
+            surface = 60;
+        }
+        rift_build(&app->world, 0, surface, 0, 0);
+        place_at_rift(app, 0, surface, 0, 0);
+    } else {
+        app->player.x = (float)app->loading_center_x + 0.5f;
+        app->player.z = (float)app->loading_center_z + 0.5f;
+        app->player.y = (float)world_surface_y(&app->world, app->loading_center_x,
+                                               app->loading_center_z);
         if (app->player.y < 2.0f) {
             app->player.y = 40.0f;
         }
@@ -332,9 +368,10 @@ static void spawn_in_world(App *app, Dimension dimension, GLFWwindow *window) {
 }
 
 static void start_new_world(App *app, GLFWwindow *window) {
+    (void)window;
     const uint64_t seed = (uint64_t)strtoull(app->seed_text, NULL, 10);
     world_set_seed(&app->world, seed ? seed : 1337u);
-    spawn_in_world(app, app->create_dimension, window);
+    begin_loading(app, app->create_dimension);
 }
 
 static bool load_game(App *app, GLFWwindow *window) {
@@ -342,7 +379,6 @@ static bool load_game(App *app, GLFWwindow *window) {
         return false;
     }
     renderer_set_environment(&app->renderer, app->world.dimension);
-    resolve_gate(app);
     reset_streaming(app);
     stream_around_player(app);
     app->travel_armed = false;
@@ -352,61 +388,38 @@ static bool load_game(App *app, GLFWwindow *window) {
     return true;
 }
 
-/* Fills in only the columns the shrine court covers that are still missing, so
- * an existing landscape (and anything built on it) is never regenerated. */
-static void ensure_gate_area(App *app) {
-    for (int cz = (app->gate_z - 9) >> 4; cz <= (app->gate_z + 9) >> 4; ++cz) {
-        for (int cx = (app->gate_x - 9) >> 4; cx <= (app->gate_x + 9) >> 4; ++cx) {
-            if (!world_chunk(&app->world, cx, 0, cz, false)) {
-                world_generate_around(&app->world, cx, cz, 0);
-            }
-        }
-    }
-}
-
-/* The shrine is carved only once the player comes near, so an untouched world
- * stays wilderness until the rift is actually found. */
-static void maybe_build_gate(App *app) {
-    if (app->gate_built || app->world.dimension != BG_UPPERWORLD) {
-        return;
-    }
-    const float dx = app->player.x - ((float)app->gate_x + 0.5f);
-    const float dz = app->player.z - ((float)app->gate_z + 0.5f);
-    if (dx * dx + dz * dz > GATE_SIGHT * GATE_SIGHT) {
-        return;
-    }
-    app->gate_built = true;
-    ensure_gate_area(app);
-    build_rift_gate(&app->world, app->gate_x, app->gate_z);
-    for (int cz = (app->gate_z - 9) >> 4; cz <= (app->gate_z + 9) >> 4; ++cz) {
-        for (int cx = (app->gate_x - 9) >> 4; cx <= (app->gate_x + 9) >> 4; ++cx) {
-            if (column_tracked(app, column_key(cx, cz))) {
-                mesh_column(app, cx, cz);
-            }
-        }
-    }
-}
-
 static void travel(App *app) {
     const Dimension next = app->world.dimension == BG_UPPERWORLD ? BG_UNDERWORLD : BG_UPPERWORLD;
+    const int px = (int)floorf(app->player.x);
+    const int py = (int)floorf(app->player.y);
+    const int pz = (int)floorf(app->player.z);
+
+    /* The frame is wherever the player is standing in the portal; rebuilding the
+     * twin from it keeps both sides of a hand-built rift in the same place. */
+    int cx = 0;
+    int cy = 0;
+    int cz = 0;
+    int axis = 0;
+    if (!rift_frame_at(&app->world, px, py, pz, &cx, &cy, &cz, &axis) &&
+        !rift_frame_at(&app->world, px, py + 1, pz, &cx, &cy, &cz, &axis)) {
+        return;
+    }
+
     world_clear(&app->world);
     world_set_dimension(&app->world, next);
     renderer_set_environment(&app->renderer, next);
     reset_streaming(app);
 
-    world_generate_around(&app->world, app->gate_x / CHUNK_SIZE,
-                          app->gate_z / CHUNK_SIZE, RENDER_RADIUS + 1);
-    int gate_y = build_rift_gate(&app->world, app->gate_x, app->gate_z);
-    app->gate_built = true;
-    if (gate_y < 2) {
-        gate_y = world_surface_y(&app->world, app->gate_x, app->gate_z);
-    }
+    world_generate_around(&app->world, cx / CHUNK_SIZE, cz / CHUNK_SIZE, RENDER_RADIUS + 1);
+    rift_build(&app->world, cx, cy, cz, axis);
 
-    place_at_gate(app, gate_y);
+    place_at_rift(app, cx, cy, cz, axis);
     app->travel_armed = false;
     mobs_clear(&app->mobs);
 
     stream_around_player(app);
+    set_toast(app, next == BG_UNDERWORLD ? "The Underworld swallows you."
+                                        : "You step back into the open.");
 }
 
 static void save_and_title(App *app, GLFWwindow *window) {
@@ -419,23 +432,87 @@ static void save_and_title(App *app, GLFWwindow *window) {
 
 /* ----------------------------------------------------------------- menus */
 
-static void draw_panel(BgUi *ui, float width, float height) {
-    const float dim[4] = { 0.04f, 0.05f, 0.08f, 0.78f };
+/* The dirt backdrop the classic menus always use, tinted down a little. */
+static void menu_background(BgUi *ui, float width, float height) {
+    ui_tile_texture(ui, 0.0f, 0.0f, width, height, 2, 64.0f, 0.74f, 1.0f);
+    const float dim[4] = { 0.02f, 0.02f, 0.03f, 0.30f };
     ui_rect(ui, 0.0f, 0.0f, width, height, dim);
 }
 
-static void draw_option(BgUi *ui, float center_x, float y, float scale, const char *label,
-                        bool selected) {
-    const float plate[4] = { 0.10f, 0.12f, 0.18f, selected ? 0.92f : 0.55f };
-    const float width = ui_text_width(label, scale) + 48.0f;
-    ui_rect(ui, center_x - width * 0.5f, y - scale * 3.0f, width, scale * 13.0f, plate);
-    if (selected) {
-        const float edge[4] = { 0.98f, 0.78f, 0.32f, 0.95f };
-        ui_rect(ui, center_x - width * 0.5f, y - scale * 3.0f, 4.0f, scale * 13.0f, edge);
-    }
-    const float color[4] = { selected ? 1.0f : 0.78f, selected ? 1.0f : 0.80f,
-                             selected ? 0.92f : 0.82f, 1.0f };
-    ui_text_centered(ui, center_x, y, scale, label, color);
+static void draw_shadowed_centered(BgUi *ui, float cx, float y, float scale, const char *text,
+                                   const float color[4]) {
+    const float shadow[4] = { 0.05f, 0.05f, 0.06f, 0.92f };
+    ui_text_centered(ui, cx + 2.0f, y + 2.0f, scale, text, shadow);
+    ui_text_centered(ui, cx, y, scale, text, color);
+}
+
+static void draw_logo(BgUi *ui, float cx, float y, float scale) {
+    const float shadow[4] = { 0.09f, 0.09f, 0.11f, 1.0f };
+    const float bevel[4] = { 0.30f, 0.26f, 0.20f, 1.0f };
+    const float face[4] = { 0.95f, 0.93f, 0.88f, 1.0f };
+    ui_text_centered(ui, cx + 6.0f, y + 6.0f, scale, "BLOCKFORGE", shadow);
+    ui_text_centered(ui, cx + 3.0f, y + 3.0f, scale, "BLOCKFORGE", bevel);
+    ui_text_centered(ui, cx, y, scale, "BLOCKFORGE", face);
+}
+
+/* Stone-grey button with a bevel, a black outline and a shadowed label. */
+static void draw_button(BgUi *ui, float x, float y, float w, float h, float scale,
+                        const char *label, bool selected, bool enabled) {
+    const float border[4] = { 0.05f, 0.05f, 0.06f, 0.95f };
+    ui_rect(ui, x - 3.0f, y - 3.0f, w + 6.0f, h + 6.0f, border);
+
+    const float fill[4] = {
+        enabled ? (selected ? 0.48f : 0.33f) : 0.22f,
+        enabled ? (selected ? 0.49f : 0.34f) : 0.22f,
+        enabled ? (selected ? 0.52f : 0.37f) : 0.24f,
+        1.0f
+    };
+    ui_rect(ui, x, y, w, h, fill);
+
+    const float light[4] = { 0.66f, 0.67f, 0.70f, selected ? 1.0f : 0.60f };
+    ui_rect(ui, x, y, w, 3.0f, light);
+    ui_rect(ui, x, y, 3.0f, h, light);
+    const float dark[4] = { 0.11f, 0.11f, 0.13f, 0.92f };
+    ui_rect(ui, x, y + h - 3.0f, w, 3.0f, dark);
+    ui_rect(ui, x + w - 3.0f, y, 3.0f, h, dark);
+
+    const float text_y = y + (h - 7.0f * scale) * 0.5f;
+    const float text_shadow[4] = { 0.08f, 0.08f, 0.09f, 1.0f };
+    ui_text_centered(ui, x + w * 0.5f + 2.0f, text_y + 2.0f, scale, label, text_shadow);
+    const float color[4] = {
+        enabled ? (selected ? 1.0f : 0.90f) : 0.42f,
+        enabled ? (selected ? 0.95f : 0.91f) : 0.43f,
+        enabled ? (selected ? 0.60f : 0.92f) : 0.47f,
+        1.0f
+    };
+    ui_text_centered(ui, x + w * 0.5f, text_y, scale, label, color);
+}
+
+/* Sunken black field with a light border, as used for text input. */
+static void draw_field(BgUi *ui, float x, float y, float w, float h, float scale,
+                       const char *label, bool selected) {
+    const float back[4] = { 0.0f, 0.0f, 0.0f, 0.78f };
+    ui_rect(ui, x, y, w, h, back);
+    const float edge[4] = { selected ? 0.88f : 0.36f, selected ? 0.89f : 0.37f,
+                            selected ? 0.86f : 0.40f, 1.0f };
+    ui_rect(ui, x, y, w, 2.0f, edge);
+    ui_rect(ui, x, y + h - 2.0f, w, 2.0f, edge);
+    ui_rect(ui, x, y, 2.0f, h, edge);
+    ui_rect(ui, x + w - 2.0f, y, 2.0f, h, edge);
+
+    const float text_y = y + (h - 7.0f * scale) * 0.5f;
+    const float shadow[4] = { 0.05f, 0.05f, 0.06f, 1.0f };
+    ui_text(ui, x + 16.0f, text_y + 2.0f, scale, label, shadow);
+    const float color[4] = { 0.93f, 0.93f, 0.90f, 1.0f };
+    ui_text(ui, x + 14.0f, text_y, scale, label, color);
+}
+
+static void draw_splash(BgUi *ui, float cx, float y, float time) {
+    const float bob = sinf(time * 2.8f) * 5.0f;
+    const float shadow[4] = { 0.16f, 0.13f, 0.02f, 0.95f };
+    const float color[4] = { 1.0f, 0.98f, 0.22f, 1.0f };
+    ui_text_centered(ui, cx + 2.0f, y + bob + 2.0f, 2.0f, "Now with rifts!", shadow);
+    ui_text_centered(ui, cx, y + bob, 2.0f, "Now with rifts!", color);
 }
 
 static void render_title(App *app) {
@@ -444,30 +521,27 @@ static void render_title(App *app) {
 
     const float width = (float)app->width;
     const float height = (float)app->height;
-    draw_panel(&ui, width, height);
+    menu_background(&ui, width, height);
 
-    const float glow[4] = { 0.98f, 0.72f, 0.28f, 0.95f };
-    const float soft[4] = { 0.72f, 0.80f, 0.94f, 0.85f };
-    ui_text_centered(&ui, width * 0.5f, height * 0.18f, 9.0f, "BLOCKFORGE", glow);
-    ui_text_centered(&ui, width * 0.5f, height * 0.30f, 2.0f, "TWO REALMS. ONE RIFT.", soft);
+    draw_logo(&ui, width * 0.5f, height * 0.10f, 8.0f);
+    const float soft[4] = { 0.88f, 0.90f, 0.94f, 0.92f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.255f, 2.0f,
+                           "TWO REALMS. ONE RIFT.", soft);
+    draw_splash(&ui, width * 0.5f + 300.0f, height * 0.185f, app->time);
 
-    const float option_scale = 3.0f;
-    const float start_y = height * 0.46f;
-    const char *labels[3] = { "CONTINUE", "NEW WORLD", "QUIT" };
+    const float scale = 2.4f;
+    const float bw = 420.0f;
+    const float bh = 46.0f;
+    const float start_y = height * 0.44f;
+    const char *labels[3] = { "CONTINUE", "NEW WORLD", "QUIT GAME" };
     for (int i = 0; i < 3; ++i) {
-        const bool selected = (i == app->menu_choice);
-        if (i == 0 && !app->has_save) {
-            const float faded[4] = { 0.45f, 0.48f, 0.55f, 1.0f };
-            ui_text_centered(&ui, width * 0.5f, start_y + (float)i * 64.0f, option_scale,
-                             "CONTINUE (NO SAVE)", faded);
-            continue;
-        }
-        draw_option(&ui, width * 0.5f, start_y + (float)i * 64.0f, option_scale, labels[i],
-                    selected);
+        const bool enabled = !(i == 0 && !app->has_save);
+        draw_button(&ui, width * 0.5f - bw * 0.5f, start_y + (float)i * (bh + 12.0f), bw, bh,
+                    scale, labels[i], app->menu_choice == i && enabled, enabled);
     }
 
-    ui_text_centered(&ui, width * 0.5f, height - 48.0f, 1.6f,
-                     "WASD MOVE  SPACE JUMP  LMB MINE/ATTACK  RMB BUILD  C CRAFT  F EAT  ESC PAUSE",
+    ui_text_centered(&ui, width * 0.5f, height - 40.0f, 1.5f,
+                     "WASD MOVE   SPACE JUMP   LMB MINE/ATTACK   RMB BUILD/LIGHT   C CRAFT   F EAT",
                      soft);
 
     renderer_draw_ui(&app->renderer, &ui);
@@ -480,25 +554,37 @@ static void render_create(App *app) {
 
     const float width = (float)app->width;
     const float height = (float)app->height;
-    draw_panel(&ui, width, height);
+    menu_background(&ui, width, height);
 
-    const float title_color[4] = { 0.98f, 0.78f, 0.36f, 1.0f };
-    const float text_color[4] = { 0.90f, 0.92f, 0.96f, 1.0f };
-    ui_text_centered(&ui, width * 0.5f, height * 0.16f, 5.0f, "NEW WORLD", title_color);
-    ui_text_centered(&ui, width * 0.5f, height * 0.26f, 1.8f, "TAB SWITCHES FIELD", text_color);
+    draw_logo(&ui, width * 0.5f, height * 0.06f, 5.0f);
+    const float title[4] = { 0.98f, 0.90f, 0.62f, 1.0f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.19f, 3.0f, "NEW WORLD", title);
+
+    const float field_w = 560.0f;
+    const float field_h = 54.0f;
+    const float field_x = width * 0.5f - field_w * 0.5f;
 
     char seed_line[64];
-    snprintf(seed_line, sizeof(seed_line), "SEED: %s%s", app->seed_text,
+    snprintf(seed_line, sizeof(seed_line), "SEED  %s%s", app->seed_text,
              app->create_choice == 0 ? "_" : "");
-    draw_option(&ui, width * 0.5f, height * 0.40f, 2.6f, seed_line, app->create_choice == 0);
+    draw_field(&ui, field_x, height * 0.33f, field_w, field_h, 2.2f, seed_line,
+               app->create_choice == 0);
 
     char realm_line[64];
-    snprintf(realm_line, sizeof(realm_line), "REALM: %s",
-             app->create_dimension == BG_UPPERWORLD ? "UPPERWORLD" : "UNDERWORLD");
-    draw_option(&ui, width * 0.5f, height * 0.52f, 2.6f, realm_line, app->create_choice == 1);
+    snprintf(realm_line, sizeof(realm_line), "REALM  %s%s%s",
+             app->create_choice == 1 ? "< " : "",
+             app->create_dimension == BG_UPPERWORLD ? "UPPERWORLD" : "UNDERWORLD",
+             app->create_choice == 1 ? " >" : "");
+    draw_field(&ui, field_x, height * 0.45f, field_w, field_h, 2.2f, realm_line,
+               app->create_choice == 1);
 
-    draw_option(&ui, width * 0.5f, height * 0.68f, 2.6f, "CREATE", app->create_choice == 2);
-    ui_text_centered(&ui, width * 0.5f, height * 0.80f, 1.8f, "ESC GOES BACK", text_color);
+    draw_button(&ui, width * 0.5f - 200.0f, height * 0.62f, 400.0f, 50.0f, 2.4f,
+                "CREATE WORLD", app->create_choice == 2, true);
+
+    const float hint[4] = { 0.82f, 0.84f, 0.88f, 0.85f };
+    ui_text_centered(&ui, width * 0.5f, height * 0.78f, 1.6f,
+                     "UP/DOWN MOVES   LEFT/RIGHT CHANGES REALM   ENTER CONFIRMS   ESC BACK",
+                     hint);
 
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
@@ -510,22 +596,27 @@ static void render_pause(App *app) {
 
     const float width = (float)app->width;
     const float height = (float)app->height;
-    draw_panel(&ui, width, height);
+    const float dim[4] = { 0.02f, 0.02f, 0.03f, 0.62f };
+    ui_rect(&ui, 0.0f, 0.0f, width, height, dim);
 
-    const float title_color[4] = { 0.98f, 0.78f, 0.36f, 1.0f };
-    const float text_color[4] = { 0.80f, 0.86f, 0.96f, 0.9f };
-    ui_text_centered(&ui, width * 0.5f, height * 0.20f, 6.0f, "PAUSED", title_color);
+    const float title[4] = { 0.98f, 0.92f, 0.72f, 1.0f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.14f, 5.0f, "GAME PAUSED", title);
 
-    const char *labels[3] = { "RESUME", "SAVE AND TITLE", "QUIT TO DESKTOP" };
+    const float scale = 2.4f;
+    const float bw = 470.0f;
+    const float bh = 46.0f;
+    const char *labels[3] = { "BACK TO GAME", "SAVE AND QUIT TO TITLE", "QUIT TO DESKTOP" };
     for (int i = 0; i < 3; ++i) {
-        draw_option(&ui, width * 0.5f, height * 0.40f + (float)i * 64.0f, 2.8f, labels[i],
-                    i == app->pause_choice);
+        draw_button(&ui, width * 0.5f - bw * 0.5f, height * 0.36f + (float)i * (bh + 12.0f),
+                    bw, bh, scale, labels[i], i == app->pause_choice, true);
     }
 
-    char where[96];
-    snprintf(where, sizeof(where), "%s   X %.1f  Y %.1f  Z %.1f",
-             dimension_name(app->world.dimension), app->player.x, app->player.y, app->player.z);
-    ui_text_centered(&ui, width * 0.5f, height - 56.0f, 1.8f, where, text_color);
+    char where[128];
+    snprintf(where, sizeof(where), "%s   X %.1f   Y %.1f   Z %.1f",
+             dimension_name(app->world.dimension), app->player.x, app->player.y,
+             app->player.z);
+    const float soft[4] = { 0.78f, 0.82f, 0.90f, 0.85f };
+    ui_text_centered(&ui, width * 0.5f, height - 52.0f, 1.6f, where, soft);
 
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
@@ -537,7 +628,10 @@ static void render_toast(App *app) {
     }
     BgUi ui;
     memset(&ui, 0, sizeof(ui));
-    const float color[4] = { 1.0f, 0.92f, 0.70f, 0.95f };
+    const float color[4] = { 1.0f, 0.94f, 0.74f, 0.96f };
+    const float shadow[4] = { 0.06f, 0.06f, 0.07f, 0.90f };
+    ui_text_centered(&ui, (float)app->width * 0.5f + 1.5f, (float)app->height - 118.0f + 1.5f,
+                     1.8f, app->toast, shadow);
     ui_text_centered(&ui, (float)app->width * 0.5f, (float)app->height - 118.0f, 1.8f,
                      app->toast, color);
     renderer_draw_ui(&app->renderer, &ui);
@@ -563,19 +657,20 @@ static void render_crafting(App *app) {
 
     const float width = (float)app->width;
     const float height = (float)app->height;
-    draw_panel(&ui, width, height);
+    const float dim[4] = { 0.02f, 0.02f, 0.03f, 0.74f };
+    ui_rect(&ui, 0.0f, 0.0f, width, height, dim);
 
-    const float title_color[4] = { 0.98f, 0.78f, 0.36f, 1.0f };
-    const float text_color[4] = { 0.88f, 0.91f, 0.98f, 1.0f };
-    const float muted[4] = { 0.52f, 0.56f, 0.64f, 1.0f };
+    const float title[4] = { 0.98f, 0.92f, 0.72f, 1.0f };
+    const float text_color[4] = { 0.90f, 0.92f, 0.96f, 1.0f };
+    const float muted[4] = { 0.56f, 0.60f, 0.68f, 1.0f };
     const bool near_table = player_near_table(&app->world, &app->player);
 
-    ui_text_centered(&ui, width * 0.5f, height * 0.08f, 4.0f, "CRAFTING", title_color);
-    ui_text_centered(&ui, width * 0.5f, height * 0.16f, 1.6f,
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.055f, 4.0f, "CRAFTING", title);
+    ui_text_centered(&ui, width * 0.5f, height * 0.13f, 1.6f,
                      near_table ? "CRAFTING TABLE IN REACH" : "NO TABLE: BASIC RECIPES ONLY",
-                     near_table ? title_color : muted);
+                     near_table ? title : muted);
 
-    float y = height * 0.23f;
+    float y = height * 0.21f;
     for (int i = 0; i < recipe_count(); ++i) {
         const BgRecipe *recipe = recipe_at(i);
         const bool can = recipe_can_craft(app->player.inventory, recipe, near_table);
@@ -584,24 +679,21 @@ static void render_crafting(App *app) {
         char line[128];
         recipe_line(recipe, line, sizeof(line));
 
+        const float row_w = 660.0f;
+        const float row_x = width * 0.5f - row_w * 0.5f;
         if (selected) {
-            const float plate[4] = { 0.10f, 0.12f, 0.18f, 0.92f };
-            const float line_width = ui_text_width(line, 2.0f);
-            ui_rect(&ui, width * 0.5f - line_width * 0.5f - 14.0f, y - 7.0f,
-                    line_width + 28.0f, 26.0f, plate);
+            const float plate[4] = { 0.10f, 0.12f, 0.17f, 0.95f };
+            ui_rect(&ui, row_x, y - 8.0f, row_w, 30.0f, plate);
+            const float edge[4] = { 0.90f, 0.78f, 0.40f, 1.0f };
+            ui_rect(&ui, row_x, y - 8.0f, 3.0f, 30.0f, edge);
         }
-        float color[4] = { can ? 0.82f : 0.42f, can ? 0.90f : 0.45f, can ? 1.0f : 0.52f,
-                           1.0f };
-        if (selected) {
-            color[0] = 1.0f;
-            color[1] = 0.95f;
-            color[2] = 0.62f;
-        }
+        const float color[4] = { can ? 0.84f : 0.44f, can ? 0.90f : 0.46f,
+                                 can ? 0.98f : 0.52f, 1.0f };
         ui_text_centered(&ui, width * 0.5f, y, 2.0f, line, color);
         y += 31.0f;
     }
 
-    float inv_y = height * 0.72f;
+    float inv_y = height * 0.73f;
     ui_text_centered(&ui, width * 0.5f, inv_y, 1.6f, "INVENTORY", muted);
     inv_y += 26.0f;
 
@@ -628,11 +720,14 @@ static void render_crafting(App *app) {
         ui_text_centered(&ui, width * 0.5f, inv_y, 1.5f, line, text_color);
     }
 
+    const float tip[4] = { 0.86f, 0.80f, 0.56f, 0.90f };
+    ui_text_centered(&ui, width * 0.5f, height - 92.0f, 1.5f,
+                     "4X5 VOIDSTONE FRAME + EMBER SHARD OPENS A RIFT", tip);
     ui_text_centered(&ui, width * 0.5f, height - 62.0f, 1.7f,
                      "UP/DOWN SELECT   ENTER CRAFT   C CLOSE", text_color);
 
     if (app->toast_timer > 0.0f) {
-        ui_text_centered(&ui, width * 0.5f, height - 92.0f, 1.7f, app->toast, title_color);
+        ui_text_centered(&ui, width * 0.5f, height - 120.0f, 1.7f, app->toast, title);
     }
 
     renderer_draw_ui(&app->renderer, &ui);
@@ -672,6 +767,53 @@ static void handle_crafting_input(App *app, GLFWwindow *window) {
             set_toast(app, message);
         }
     }
+}
+
+/* The classic world-build screen: dirt backdrop, logo and a progress bar. */
+static void render_loading(App *app) {
+    BgUi ui;
+    memset(&ui, 0, sizeof(ui));
+
+    const float width = (float)app->width;
+    const float height = (float)app->height;
+    menu_background(&ui, width, height);
+
+    draw_logo(&ui, width * 0.5f, height * 0.18f, 6.0f);
+
+    const float title[4] = { 0.96f, 0.94f, 0.88f, 1.0f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.40f, 2.4f, "BUILDING WORLD", title);
+
+    const float bw = 520.0f;
+    const float bh = 22.0f;
+    const float bx = width * 0.5f - bw * 0.5f;
+    const float by = height * 0.49f;
+    float progress = app->loading_total > 0
+                         ? (float)app->loading_cursor / (float)app->loading_total
+                         : 1.0f;
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    const float frame[4] = { 0.05f, 0.05f, 0.06f, 1.0f };
+    ui_rect(&ui, bx - 3.0f, by - 3.0f, bw + 6.0f, bh + 6.0f, frame);
+    const float track[4] = { 0.20f, 0.20f, 0.21f, 1.0f };
+    ui_rect(&ui, bx, by, bw, bh, track);
+    const float fill[4] = { 0.36f, 0.75f, 0.20f, 1.0f };
+    ui_rect(&ui, bx, by, bw * progress, bh, fill);
+    const float gloss[4] = { 0.62f, 0.92f, 0.42f, 0.85f };
+    ui_rect(&ui, bx, by, bw * progress, 5.0f, gloss);
+
+    char line[96];
+    snprintf(line, sizeof(line), "%d%%   %s", (int)(progress * 100.0f + 0.5f),
+             app->loading_dimension == BG_UNDERWORLD ? "UNDERWORLD" : "UPPERWORLD");
+    const float soft[4] = { 0.86f, 0.88f, 0.92f, 0.90f };
+    ui_text_centered(&ui, width * 0.5f, by + bh + 16.0f, 1.8f, line, soft);
+
+    ui_text_centered(&ui, width * 0.5f, height - 56.0f, 1.5f,
+                     "TIP: TEN VOIDSTONE BLOCKS IN A 4X5 RING, LIT WITH AN EMBER SHARD, OPEN A RIFT.",
+                     soft);
+
+    renderer_draw_ui(&app->renderer, &ui);
+    ui_free(&ui);
 }
 
 /* ------------------------------------------------------------- game loop */
@@ -717,12 +859,9 @@ static void handle_create_input(App *app, GLFWwindow *window) {
     }
     if (app->create_choice == 1 &&
         (key_pressed(app, GLFW_KEY_LEFT) || key_pressed(app, GLFW_KEY_RIGHT) ||
-         key_pressed(app, GLFW_KEY_SPACE) || key_pressed(app, GLFW_KEY_ENTER))) {
+         key_pressed(app, GLFW_KEY_SPACE))) {
         app->create_dimension = app->create_dimension == BG_UPPERWORLD ? BG_UNDERWORLD
                                                                       : BG_UPPERWORLD;
-        if (key_pressed(app, GLFW_KEY_ENTER)) {
-            start_new_world(app, window);
-        }
         return;
     }
     if (app->create_choice == 0 && key_pressed(app, GLFW_KEY_BACKSPACE)) {
@@ -847,6 +986,27 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                     held->item = BG_AIR;
                 }
             }
+        } else if (held->count > 0 && held->item == BG_ITEM_EMBER_SHARD) {
+            /* An ember shard struck against a voidstone frame lights the rift. */
+            int bx = 0, by = 0, bz = 0;
+            BlockId type = BG_AIR;
+            int normal[3] = { 0, 0, 0 };
+            if (player_raycast(&app->player, &app->world, 6.0f, &bx, &by, &bz, &type,
+                               normal) &&
+                type == BG_VOIDSTONE) {
+                int cx = 0, cy = 0, cz = 0, axis = 0;
+                const RiftFire fire = rift_ignite(&app->world, bx, by, bz, &cx, &cy, &cz, &axis);
+                if (fire == RIFT_OPENED) {
+                    inventory_remove(app->player.inventory, BG_ITEM_EMBER_SHARD, 1);
+                    remesh_near(app, axis == 0 ? cx + 1 : cx, cy + 2,
+                                axis == 0 ? cz : cz + 1);
+                    set_toast(app, "The rift tears open.");
+                } else if (fire == RIFT_ALREADY_OPEN) {
+                    set_toast(app, "The rift is already open.");
+                } else {
+                    set_toast(app, "A rift needs a 4x5 voidstone frame, hollow in the middle.");
+                }
+            }
         }
     }
 
@@ -868,7 +1028,6 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
     mobs_update(&app->mobs, &app->world, &app->player, dt);
 
     stream_around_player(app);
-    maybe_build_gate(app);
 
     const BlockId at_feet = world_get_block(&app->world, (int)floorf(app->player.x),
                                             (int)floorf(app->player.y + 0.5f),
@@ -980,6 +1139,8 @@ int main(void) {
             handle_title_input(&g_app, window);
         } else if (g_app.state == STATE_CREATE) {
             handle_create_input(&g_app, window);
+        } else if (g_app.state == STATE_LOADING) {
+            update_loading(&g_app, window);
         } else if (g_app.state == STATE_PAUSED) {
             handle_pause_input(&g_app, window);
         } else {
@@ -993,6 +1154,8 @@ int main(void) {
             render_title(&g_app);
         } else if (g_app.state == STATE_CREATE) {
             render_create(&g_app);
+        } else if (g_app.state == STATE_LOADING) {
+            render_loading(&g_app);
         } else {
             draw_world(&g_app);
             renderer_draw_hud(&g_app.renderer, &g_app.player);
