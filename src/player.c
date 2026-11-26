@@ -47,22 +47,13 @@ void player_init(BgPlayer *player) {
     player->on_ground = false;
     player->health = 20;
     player->selected = 0;
+    player->invuln = 0.0f;
 
-    for (int i = 0; i < 36; ++i) {
-        player->inventory[i] = BG_AIR;
-    }
-    player->hotbar[0] = BG_DIRT;
-    player->hotbar[1] = BG_STONE;
-    player->hotbar[2] = BG_PLANKS;
-    player->hotbar[3] = BG_EMBERSTONE;
-    player->hotbar[4] = BG_ASHSOIL;
-    player->hotbar[5] = BG_LUMENSTONE;
-    player->hotbar[6] = BG_VOIDSTONE;
-    player->hotbar[7] = BG_PORTAL;
-    player->hotbar[8] = BG_CRIMSON_WOOD;
-    for (int i = 0; i < 9; ++i) {
-        player->inventory[i] = player->hotbar[i];
-    }
+    /* A small starter kit: enough timber to reach a crafting table, then
+     * everything else has to be gathered. */
+    inventory_clear(player->inventory);
+    inventory_add(player->inventory, BG_PLANKS, 12);
+    inventory_add(player->inventory, BG_ITEM_STICK, 6);
 }
 
 void player_update(BgPlayer *player, float dt, const BgInput *input, const World *world) {

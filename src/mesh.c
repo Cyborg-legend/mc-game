@@ -64,23 +64,31 @@ static bool reserve_indices(BgMesh *mesh, size_t *capacity, size_t needed) {
     return true;
 }
 
+void mesh_reset(BgMesh *mesh) {
+    mesh->vertex_count = 0;
+    mesh->index_count = 0;
+}
+
 void mesh_free(BgMesh *mesh) {
     free(mesh->vertices);
     free(mesh->indices);
     mesh->vertices = NULL;
     mesh->indices = NULL;
     mesh->vertex_count = 0;
+    mesh->vertex_capacity = 0;
     mesh->index_count = 0;
+    mesh->index_capacity = 0;
 }
 
 void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
+    /* Chunk meshes are always built from scratch, so drop any previous
+     * pointers rather than trusting the caller's struct. */
     mesh->vertices = NULL;
-    mesh->indices = NULL;
     mesh->vertex_count = 0;
+    mesh->vertex_capacity = 0;
+    mesh->indices = NULL;
     mesh->index_count = 0;
-
-    size_t vertex_capacity = 0;
-    size_t index_capacity = 0;
+    mesh->index_capacity = 0;
 
     const float origin_x = (float)(chunk->cx * CHUNK_SIZE);
     const float origin_y = (float)(chunk->cy * CHUNK_SIZE);
@@ -144,8 +152,8 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                         ao[c] = 1.0f - 0.2f * (float)occlusion;
                     }
 
-                    if (!reserve_vertices(mesh, &vertex_capacity, mesh->vertex_count + 4) ||
-                        !reserve_indices(mesh, &index_capacity, mesh->index_count + 6)) {
+                    if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
+                        !reserve_indices(mesh, &mesh->index_capacity, mesh->index_count + 6)) {
                         return;
                     }
 
@@ -182,5 +190,47 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                 }
             }
         }
+    }
+}
+
+void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId skin) {
+    const float tiles_per_row = 16.0f;
+    const float tile_size = 1.0f / tiles_per_row;
+    const float pad = tile_size * 0.002f;
+    const float span = tile_size - 2.0f * pad;
+    const float corner_u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
+    const float corner_v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+
+    /* Soft shading per face so flat boxes still read as solid volumes. */
+    const float face_ao[6] = { 0.86f, 0.86f, 1.0f, 0.62f, 0.92f, 0.92f };
+
+    for (int face = 0; face < 6; ++face) {
+        if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
+            !reserve_indices(mesh, &mesh->index_capacity, mesh->index_count + 6)) {
+            return;
+        }
+        const int tile = block_tile(skin, face);
+        const float tu = (float)(tile % 16) * tile_size;
+        const float tv = (float)(tile / 16) * tile_size;
+
+        const uint32_t base = (uint32_t)mesh->vertex_count;
+        for (int c = 0; c < 4; ++c) {
+            BgVertex *vertex = &mesh->vertices[mesh->vertex_count++];
+            for (int axis = 0; axis < 3; ++axis) {
+                const float sign = (float)kCornerOffsets[face][c][axis] * 2.0f - 1.0f;
+                vertex->pos[axis] = center[axis] + sign * half[axis];
+                vertex->normal[axis] = kFaceNormals[face][axis];
+            }
+            vertex->uv[0] = tu + pad + corner_u[c] * span;
+            vertex->uv[1] = tv + pad + corner_v[c] * span;
+            vertex->ao = face_ao[face];
+        }
+
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 1;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 3;
     }
 }

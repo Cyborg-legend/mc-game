@@ -465,6 +465,22 @@ bool renderer_init(BgRenderer *renderer) {
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
     glBindVertexArray(0);
 
+    glGenVertexArrays(1, &renderer->mob_vao);
+    glGenBuffers(1, &renderer->mob_vbo);
+    glGenBuffers(1, &renderer->mob_ibo);
+    glBindVertexArray(renderer->mob_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->mob_vbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->mob_ibo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, pos));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, normal));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, uv));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
+    glBindVertexArray(0);
+
     glGenVertexArrays(1, &renderer->ui_vao);
     glGenBuffers(1, &renderer->ui_vbo);
     glBindVertexArray(renderer->ui_vao);
@@ -495,6 +511,10 @@ void renderer_shutdown(BgRenderer *renderer) {
     if (renderer->vao) glDeleteVertexArrays(1, &renderer->vao);
     if (renderer->ui_vbo) glDeleteBuffers(1, &renderer->ui_vbo);
     if (renderer->ui_vao) glDeleteVertexArrays(1, &renderer->ui_vao);
+    mesh_free(&renderer->mob_mesh);
+    if (renderer->mob_vbo) glDeleteBuffers(1, &renderer->mob_vbo);
+    if (renderer->mob_ibo) glDeleteBuffers(1, &renderer->mob_ibo);
+    if (renderer->mob_vao) glDeleteVertexArrays(1, &renderer->mob_vao);
     if (renderer->atlas) glDeleteTextures(1, &renderer->atlas);
     if (renderer->program) glDeleteProgram(renderer->program);
     if (renderer->ui_program) glDeleteProgram(renderer->ui_program);
@@ -881,6 +901,119 @@ void block_color(BlockId block, float rgb[3]) {
     rgb[2] = (float)def->b / 255.0f;
 }
 
+void item_color(uint16_t item, float rgb[3]) {
+    if (item < BG_BLOCK_COUNT) {
+        block_color((BlockId)item, rgb);
+        return;
+    }
+    switch (item) {
+        case BG_ITEM_STICK:
+            rgb[0] = 0.55f; rgb[1] = 0.40f; rgb[2] = 0.22f;
+            break;
+        case BG_ITEM_EMBER_SHARD:
+            rgb[0] = 0.97f; rgb[1] = 0.53f; rgb[2] = 0.16f;
+            break;
+        case BG_ITEM_ASH_DUST:
+            rgb[0] = 0.62f; rgb[1] = 0.60f; rgb[2] = 0.58f;
+            break;
+        case BG_ITEM_MEAT:
+            rgb[0] = 0.78f; rgb[1] = 0.26f; rgb[2] = 0.26f;
+            break;
+        default:
+            rgb[0] = 0.30f; rgb[1] = 0.30f; rgb[2] = 0.32f;
+            break;
+    }
+}
+
+void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
+                        const BgMobWorld *mobs) {
+    if (!renderer->mob_vao || !renderer->program || !mobs) {
+        return;
+    }
+
+    BgMesh *mesh = &renderer->mob_mesh;
+    mesh_reset(mesh);
+
+    for (int i = 0; i < MAX_MOBS; ++i) {
+        const BgMob *mob = &mobs->mobs[i];
+        if (!mob->alive) {
+            continue;
+        }
+        const MobType type = (MobType)mob->type;
+        const float half = mob_half_width(type);
+        const float height = mob_height(type);
+
+        BlockId skin = BG_PALE_QUARTZ;
+        if (type == MOB_CINDER_HOUND) {
+            skin = BG_EMBERSTONE;
+        } else if (type == MOB_ASH_WISP) {
+            skin = BG_LUMENSTONE;
+        }
+        if (mob->hurt_timer > 0.0f) {
+            skin = BG_PALE_QUARTZ;
+        }
+
+        const float body_half[3] = { half, height * 0.31f, half * 0.78f };
+        const float body_center[3] = { mob->x, mob->y + height * 0.46f, mob->z };
+        mesh_box(mesh, body_center, body_half, skin);
+
+        const float head_half[3] = { half * 0.52f, height * 0.18f, half * 0.52f };
+        const float forward = half * 0.78f;
+        const float head_center[3] = {
+            mob->x + cosf(mob->yaw) * forward,
+            mob->y + height * 0.86f,
+            mob->z + sinf(mob->yaw) * forward
+        };
+        mesh_box(mesh, head_center, head_half,
+                 type == MOB_ASH_WISP ? BG_MAGMA : skin);
+    }
+
+    if (mesh->index_count == 0) {
+        return;
+    }
+
+    float view[16];
+    float projection[16];
+    camera_view_matrix(camera, view);
+    camera_projection_matrix(camera, projection);
+
+    const float identity[16] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    };
+
+    glUseProgram(renderer->program);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "model"), 1, GL_FALSE, identity);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "view"), 1, GL_FALSE, view);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "projection"), 1, GL_FALSE,
+                       projection);
+    glUniform3f(glGetUniformLocation(renderer->program, "viewPos"), camera->x, camera->y,
+                camera->z);
+    glUniform3fv(glGetUniformLocation(renderer->program, "ambientColor"), 1, renderer->ambient);
+    glUniform3fv(glGetUniformLocation(renderer->program, "lightColor"), 1, renderer->light_color);
+    glUniform3fv(glGetUniformLocation(renderer->program, "fogColor"), 1, renderer->fog_color);
+    glUniform1f(glGetUniformLocation(renderer->program, "fogStart"), renderer->fog_start);
+    glUniform1f(glGetUniformLocation(renderer->program, "fogDensity"), renderer->fog_density);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderer->atlas);
+    glUniform1i(glGetUniformLocation(renderer->program, "texAtlas"), 0);
+
+    glBindVertexArray(renderer->mob_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->mob_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)(mesh->vertex_count * sizeof(BgVertex)), mesh->vertices,
+                 GL_STREAM_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->mob_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 (GLsizeiptr)(mesh->index_count * sizeof(uint32_t)), mesh->indices,
+                 GL_STREAM_DRAW);
+    glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, NULL);
+    glBindVertexArray(0);
+    renderer->draw_calls++;
+}
+
 void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
     int width = 1280;
     int height = 720;
@@ -911,9 +1044,12 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
         const float inner[4] = { 0.04f, 0.04f, 0.05f, 0.85f };
         ui_rect(&ui, x, bar_y, slot, slot, inner);
 
-        float rgb[3];
-        block_color(player->hotbar[i], rgb);
-        const float icon[4] = { rgb[0], rgb[1], rgb[2], 0.95f };
+        const BgStack *stack = &player->inventory[i];
+        float rgb[3] = { 0.08f, 0.08f, 0.10f };
+        if (stack->count > 0) {
+            item_color(stack->item, rgb);
+        }
+        const float icon[4] = { rgb[0], rgb[1], rgb[2], stack->count > 0 ? 0.95f : 0.55f };
         ui_rect(&ui, x + 5.0f, bar_y + 5.0f, slot - 10.0f, slot - 10.0f, icon);
 
         const float top[4] = {
@@ -926,6 +1062,20 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
 
         const float bottom[4] = { rgb[0] * 0.6f, rgb[1] * 0.6f, rgb[2] * 0.6f, 0.9f };
         ui_rect(&ui, x + 5.0f, bar_y + slot - 11.0f, slot - 10.0f, 6.0f, bottom);
+
+        if (stack->count > 1) {
+            char count_text[8];
+            snprintf(count_text, sizeof(count_text), "%u", (unsigned)stack->count);
+            const float count_color[4] = { 1.0f, 1.0f, 1.0f, 0.95f };
+            ui_text(&ui, x + slot - ui_text_width(count_text, 1.2f) - 3.0f,
+                    bar_y + slot - 10.0f, 1.2f, count_text, count_color);
+        }
+    }
+
+    const BgStack *held = &player->inventory[player->selected];
+    if (held->count > 0) {
+        const float name_color[4] = { 0.92f, 0.94f, 1.0f, 0.85f };
+        ui_text_centered(&ui, w * 0.5f, bar_y - 26.0f, 1.6f, item_name(held->item), name_color);
     }
 
     for (int i = 0; i < 10; ++i) {

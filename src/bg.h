@@ -53,6 +53,8 @@ typedef enum {
     BG_UNDERWORLD = 1
 } Dimension;
 
+typedef struct BgPlayer BgPlayer;
+
 const char *dimension_name(Dimension dimension);
 
 bool block_collidable(BlockId block);
@@ -116,6 +118,115 @@ int find_rift_gate_y(const World *world, int gate_x, int gate_z);
  * a broken portal) is repaired in place instead of re-carved. */
 int build_rift_gate(World *world, int gate_x, int gate_z);
 
+/* ---- Items and inventory --------------------------------------------- */
+
+/* The pack is the nine-slot hotbar, so every item is placeable. */
+#define INVENTORY_SLOTS 9
+#define HOTBAR_SLOTS 9
+#define MAX_STACK 64
+
+/* Item ids below BG_BLOCK_COUNT are the placeable blocks; the crafting-only
+ * items follow them. */
+typedef enum {
+    BG_ITEM_STICK = BG_BLOCK_COUNT,
+    BG_ITEM_EMBER_SHARD,
+    BG_ITEM_ASH_DUST,
+    BG_ITEM_MEAT,
+    BG_ITEM_COUNT
+} ItemId;
+
+typedef struct BgStack {
+    uint16_t item;
+    uint8_t count;
+} BgStack;
+
+const char *item_name(uint16_t item);
+bool item_block(uint16_t item, BlockId *block);
+
+/* What breaking a block puts in the inventory; false when it drops nothing. */
+bool block_drop(BlockId block, uint16_t *item, int *count);
+
+int inventory_count(const BgStack *slots, uint16_t item);
+bool inventory_add(BgStack *slots, uint16_t item, int count);
+bool inventory_remove(BgStack *slots, uint16_t item, int count);
+void inventory_clear(BgStack *slots);
+
+/* ---- Crafting -------------------------------------------------------- */
+
+#define MAX_RECIPE_INPUTS 4
+
+typedef struct BgIngredient {
+    uint16_t item;
+    uint8_t count;
+} BgIngredient;
+
+typedef struct BgRecipe {
+    BgIngredient inputs[MAX_RECIPE_INPUTS];
+    int input_count;
+    BgStack output;
+    bool needs_table;
+} BgRecipe;
+
+int recipe_count(void);
+const BgRecipe *recipe_at(int index);
+bool recipe_can_craft(const BgStack *slots, const BgRecipe *recipe, bool near_table);
+bool recipe_craft(BgStack *slots, const BgRecipe *recipe, bool near_table);
+
+/* ---- Mob ------------------------------------------------------------- */
+
+#define MAX_MOBS 64
+
+typedef enum {
+    MOB_GRAZER = 0,
+    MOB_CINDER_HOUND,
+    MOB_ASH_WISP,
+    MOB_TYPE_COUNT
+} MobType;
+
+typedef struct BgMob {
+    uint8_t type;
+    bool alive;
+    bool on_ground;
+    bool idle;
+    float x, y, z;
+    float vx, vy, vz;
+    float yaw;
+    int health;
+    float hurt_timer;
+    float attack_timer;
+    float wander_timer;
+    float wander_yaw;
+} BgMob;
+
+typedef struct BgMobWorld {
+    BgMob mobs[MAX_MOBS];
+    int count;
+    float spawn_timer;
+    uint32_t rng;
+} BgMobWorld;
+
+const char *mob_name(MobType type);
+float mob_half_width(MobType type);
+float mob_height(MobType type);
+bool mob_hostile(MobType type);
+
+void mobs_init(BgMobWorld *mobs);
+void mobs_clear(BgMobWorld *mobs);
+void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt);
+
+/* Index of the mob under the crosshair, -1 when there is none or a block is
+ * in the way. */
+int mobs_pick(const BgMobWorld *mobs, const World *world, const BgPlayer *player,
+              float max_dist);
+
+/* Applies damage and knockback. Returns true when the hit was lethal, with
+ * the dead mob's type in killed_type (call with a valid index only). */
+bool mobs_damage(BgMobWorld *mobs, int index, int damage, float dir_x, float dir_z,
+                 MobType *killed_type);
+
+/* Drops for a dead mob; returns how many entries of out are filled. */
+int mob_drops(MobType type, BgStack out[2]);
+
 /* ---- Mesh ------------------------------------------------------------ */
 
 typedef struct BgVertex {
@@ -128,11 +239,18 @@ typedef struct BgVertex {
 typedef struct BgMesh {
     BgVertex *vertices;
     size_t vertex_count;
+    size_t vertex_capacity;
     uint32_t *indices;
     size_t index_count;
+    size_t index_capacity;
 } BgMesh;
 
+/* Builds a fresh mesh; any previous contents of *mesh are discarded. */
 void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh);
+
+/* Appends one axis-aligned box to the mesh, skinned with a block's faces. */
+void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId skin);
+void mesh_reset(BgMesh *mesh);
 void mesh_free(BgMesh *mesh);
 
 /* ---- Input and player ------------------------------------------------ */
@@ -144,17 +262,18 @@ typedef struct BgInput {
     bool mouse[5];
 } BgInput;
 
-typedef struct BgPlayer {
+struct BgPlayer {
     float x, y, z;
     float vx, vy, vz;
     float yaw, pitch;
     bool on_ground;
     int health;
     int selected;
-    BlockId hotbar[9];
-    BlockId inventory[36];
-} BgPlayer;
+    float invuln;
+    BgStack inventory[INVENTORY_SLOTS];
+};
 
+bool player_near_table(const World *world, const BgPlayer *player);
 void player_init(BgPlayer *player);
 void player_update(BgPlayer *player, float dt, const BgInput *input, const World *world);
 bool player_raycast(const BgPlayer *player, const World *world, float max_dist,

@@ -22,6 +22,8 @@ typedef struct BgChunkDraw {
 typedef struct BgRenderer {
     GLuint program, vao, vbo, ibo, atlas;
     GLuint ui_program, ui_vao, ui_vbo;
+    GLuint mob_vao, mob_vbo, mob_ibo;
+    BgMesh mob_mesh;
     BgChunkDraw *chunks;
     size_t chunk_count, chunk_capacity;
     float sky[3], fog_color[3], ambient[3], light_color[3];
@@ -43,6 +45,7 @@ void renderer_set_environment(BgRenderer *renderer, Dimension dimension);
 void renderer_upload_chunk(BgRenderer *renderer, uint64_t key, const BgMesh *mesh);
 void renderer_clear_chunks(BgRenderer *renderer);
 void renderer_draw(BgRenderer *renderer, const BgCamera *camera);
+void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera, const BgMobWorld *mobs);
 void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player);
 void renderer_get_size(BgRenderer *renderer, int *width, int *height);
 
@@ -55,7 +58,8 @@ void ui_text_centered(BgUi *ui, float center_x, float y, float scale, const char
 float ui_text_width(const char *text, float scale);
 void renderer_draw_ui(BgRenderer *renderer, const BgUi *ui);
 
-/* Representative colour of a block, for the hotbar icons. */
+/* Representative colour of a block or item, for the hotbar icons. */
 void block_color(BlockId block, float rgb[3]);
+void item_color(uint16_t item, float rgb[3]);
 
 #endif /* BLOCKFORGE_C_RENDER_H */
