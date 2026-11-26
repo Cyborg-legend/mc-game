@@ -15,6 +15,7 @@ const char *mob_name(MobType type) {
         case MOB_GRAZER:       return "Grazer";
         case MOB_CINDER_HOUND: return "Cinder Hound";
         case MOB_ASH_WISP:     return "Ash Wisp";
+        case MOB_CINDER_ALPHA: return "Cinder Alpha";
         default:               return "Mob";
     }
 }
@@ -24,6 +25,7 @@ float mob_half_width(MobType type) {
         case MOB_GRAZER:       return 0.45f;
         case MOB_CINDER_HOUND: return 0.40f;
         case MOB_ASH_WISP:     return 0.35f;
+        case MOB_CINDER_ALPHA: return 0.62f;
         default:               return 0.4f;
     }
 }
@@ -33,12 +35,13 @@ float mob_height(MobType type) {
         case MOB_GRAZER:       return 1.25f;
         case MOB_CINDER_HOUND: return 1.00f;
         case MOB_ASH_WISP:     return 0.90f;
+        case MOB_CINDER_ALPHA: return 2.00f;
         default:               return 1.0f;
     }
 }
 
 bool mob_hostile(MobType type) {
-    return type == MOB_CINDER_HOUND || type == MOB_ASH_WISP;
+    return type == MOB_CINDER_HOUND || type == MOB_ASH_WISP || type == MOB_CINDER_ALPHA;
 }
 
 static int mob_health(MobType type) {
@@ -46,6 +49,7 @@ static int mob_health(MobType type) {
         case MOB_GRAZER:       return 10;
         case MOB_CINDER_HOUND: return 14;
         case MOB_ASH_WISP:     return 8;
+        case MOB_CINDER_ALPHA: return 120;
         default:               return 8;
     }
 }
@@ -54,6 +58,7 @@ static int mob_contact_damage(MobType type) {
     switch (type) {
         case MOB_CINDER_HOUND: return 3;
         case MOB_ASH_WISP:     return 2;
+        case MOB_CINDER_ALPHA: return 5;
         default:               return 0;
     }
 }
@@ -63,6 +68,7 @@ static float mob_speed(MobType type) {
         case MOB_GRAZER:       return 1.35f;
         case MOB_CINDER_HOUND: return 3.10f;
         case MOB_ASH_WISP:     return 2.20f;
+        case MOB_CINDER_ALPHA: return 3.40f;
         default:               return 1.0f;
     }
 }
@@ -395,6 +401,36 @@ static void update_hound(BgMob *mob, const World *world, const BgPlayer *player,
                     mob_speed(MOB_CINDER_HOUND) * 0.5f, dt);
 }
 
+static void update_alpha(BgMob *mob, const World *world, const BgPlayer *player,
+                         BgMobWorld *mobs, float dt) {
+    const float dx = player->x - mob->x;
+    const float dz = player->z - mob->z;
+    const float distance = sqrtf(dx * dx + dz * dz);
+
+    if (distance < 34.0f && fabsf(player->y - mob->y) < 7.0f) {
+        if (distance > 1.5f) {
+            const float inv = 1.0f / distance;
+            move_ground_mob(mob, world, dx * inv, dz * inv, mob_speed(MOB_CINDER_ALPHA), dt);
+        } else {
+            move_ground_mob(mob, world, 0.0f, 0.0f, 0.0f, dt);
+        }
+        return;
+    }
+
+    mob->wander_timer -= dt;
+    if (mob->wander_timer <= 0.0f) {
+        mob->wander_timer = 1.5f + rand_unit(mobs) * 2.0f;
+        mob->wander_yaw = rand_unit(mobs) * 6.2831853f;
+        mob->idle = rand_unit(mobs) < 0.25f;
+    }
+    if (mob->idle) {
+        move_ground_mob(mob, world, 0.0f, 0.0f, 0.0f, dt);
+        return;
+    }
+    move_ground_mob(mob, world, cosf(mob->wander_yaw), sinf(mob->wander_yaw),
+                    mob_speed(MOB_CINDER_ALPHA) * 0.4f, dt);
+}
+
 static void update_wisp(BgMob *mob, const World *world, const BgPlayer *player,
                         BgMobWorld *mobs, float dt) {
     const float dx = player->x - mob->x;
@@ -458,6 +494,39 @@ static void mob_attack_player(BgMob *mob, const World *world, BgPlayer *player) 
     }
 }
 
+bool mobs_spawn_boss(BgMobWorld *mobs, World *world, float x, float y, float z) {
+    (void)y;
+    if (!mobs || !world || world->dimension != BG_UNDERWORLD) {
+        return false;
+    }
+    for (int attempt = 0; attempt < 24; ++attempt) {
+        const float angle = rand_unit(mobs) * 6.2831853f;
+        const float distance = 18.0f + rand_unit(mobs) * 16.0f;
+        const int bx = (int)floorf(x + cosf(angle) * distance);
+        const int bz = (int)floorf(z + sinf(angle) * distance);
+        const int surface = world_surface_y(world, bx, bz);
+        if (surface < 6 || surface > UNDERWORLD_CEILING - 6) {
+            continue;
+        }
+        const BlockId ground = world_get_block(world, bx, surface - 1, bz);
+        if (ground != BG_EMBERSTONE && ground != BG_ASHSOIL && ground != BG_CINDERSTONE) {
+            continue;
+        }
+        if (solid_at(world, bx, surface, bz) || solid_at(world, bx, surface + 1, bz)) {
+            continue;
+        }
+        BgMob *mob = alloc_mob(mobs);
+        if (!mob) {
+            return false;
+        }
+        place_mob(mob, MOB_CINDER_ALPHA, (float)bx + 0.5f, (float)surface, (float)bz + 0.5f,
+                  mobs);
+        mob->wander_timer = 1.0f;
+        return true;
+    }
+    return false;
+}
+
 void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt) {
     if (dt > 0.05f) {
         dt = 0.05f;
@@ -488,7 +557,8 @@ void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt) {
         const float dx = mob->x - player->x;
         const float dz = mob->z - player->z;
         const float distance = sqrtf(dx * dx + dz * dz);
-        if (distance > MOB_DESPAWN_DISTANCE) {
+        /* The alpha guards its realm and never fades away with distance. */
+        if (distance > MOB_DESPAWN_DISTANCE && mob->type != (uint8_t)MOB_CINDER_ALPHA) {
             mob->alive = false;
             continue;
         }
@@ -502,6 +572,9 @@ void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt) {
                 break;
             case MOB_ASH_WISP:
                 update_wisp(mob, world, player, mobs, dt);
+                break;
+            case MOB_CINDER_ALPHA:
+                update_alpha(mob, world, player, mobs, dt);
                 break;
             default:
                 break;
@@ -602,6 +675,12 @@ int mob_drops(MobType type, BgStack out[2]) {
             out[0].item = BG_ITEM_ASH_DUST;
             out[0].count = 2;
             return 1;
+        case MOB_CINDER_ALPHA:
+            out[0].item = BG_ITEM_EMBERHEART;
+            out[0].count = 1;
+            out[1].item = BG_ITEM_EMBER_SHARD;
+            out[1].count = 4;
+            return 2;
         default:
             return 0;
     }

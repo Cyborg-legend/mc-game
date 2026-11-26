@@ -11,7 +11,7 @@ static const char *const kBlockNames[BG_BLOCK_COUNT] = {
     "Bedrock", "Planks", "Sticks", "Crafting Table", "Brick", "Emberstone",
     "Ashsoil", "Lumenstone", "Magma", "Voidstone", "Cinderbrick", "Pale Quartz",
     "Crimson Wood", "Bloodleaves", "Emberlode", "Ironlode", "Rift Portal",
-    "Glowmoss", "Cinderstone", "Ashblock"
+    "Glowmoss", "Cinderstone", "Ashblock", "Torch", "Chest"
 };
 
 const char *item_name(uint16_t item) {
@@ -26,6 +26,8 @@ const char *item_name(uint16_t item) {
         case BG_ITEM_WOOD_PICK:   return "Wooden Pickaxe";
         case BG_ITEM_STONE_PICK:  return "Stone Pickaxe";
         case BG_ITEM_EMBER_PICK:  return "Ember Pickaxe";
+        case BG_ITEM_RIFT_KEY:    return "Rift Key";
+        case BG_ITEM_EMBERHEART:  return "Emberheart";
         default:                  return "Unknown";
     }
 }
@@ -49,6 +51,10 @@ bool block_drop(BlockId block, uint16_t *item, int *count) {
         case BG_BEDROCK:
         case BG_WATER:
             return false;
+        case BG_CHEST:
+            /* The block comes back whole; the caller empties it first. */
+            drop = BG_CHEST;
+            break;
         case BG_GRASS:
             drop = BG_DIRT;
             break;
@@ -134,9 +140,12 @@ float block_hardness(BlockId block) {
         case BG_ASHSOIL:
         case BG_ASHBLOCK:
             return 0.45f;
+        case BG_TORCH:
+            return 0.05f;
         case BG_PLANKS:
         case BG_STICKS:
         case BG_CRAFTING_TABLE:
+        case BG_CHEST:
             return 1.00f;
         case BG_BRICK:
             return 1.10f;
@@ -176,6 +185,38 @@ float item_pick_speed(uint16_t item) {
     }
 }
 
+int item_max_stack(uint16_t item) {
+    return item_pick_tier(item) > 0 ? 1 : MAX_STACK;
+}
+
+int item_durability_max(uint16_t item) {
+    switch (item) {
+        case BG_ITEM_WOOD_PICK:  return 60;
+        case BG_ITEM_STONE_PICK: return 130;
+        case BG_ITEM_EMBER_PICK: return 250;
+        default:                 return 0;
+    }
+}
+
+bool item_wear(BgStack *stack, int amount) {
+    if (!stack || stack->count == 0) {
+        return false;
+    }
+    const int maximum = item_durability_max(stack->item);
+    if (maximum <= 0 || amount <= 0) {
+        return false;
+    }
+    int damage = (int)stack->damage + amount;
+    if (damage >= maximum) {
+        stack->item = BG_AIR;
+        stack->count = 0;
+        stack->damage = 0;
+        return true;
+    }
+    stack->damage = (uint8_t)damage;
+    return false;
+}
+
 /* ----------------------------------------------------------- inventory */
 
 void inventory_clear(BgStack *slots) {
@@ -200,12 +241,14 @@ bool inventory_add(BgStack *slots, uint16_t item, int count) {
         return true;
     }
 
+    const int max_stack = item_max_stack(item);
+
     /* Top up existing stacks first so the hotbar fills before the pack. */
     for (int i = 0; i < INVENTORY_SLOTS && count > 0; ++i) {
-        if (slots[i].item != item || slots[i].count >= MAX_STACK) {
+        if (slots[i].item != item || slots[i].count >= max_stack) {
             continue;
         }
-        const int room = MAX_STACK - slots[i].count;
+        const int room = max_stack - slots[i].count;
         const int moved = room < count ? room : count;
         slots[i].count = (uint8_t)(slots[i].count + moved);
         count -= moved;
@@ -214,9 +257,10 @@ bool inventory_add(BgStack *slots, uint16_t item, int count) {
         if (slots[i].item != BG_AIR) {
             continue;
         }
-        const int moved = MAX_STACK < count ? MAX_STACK : count;
+        const int moved = max_stack < count ? max_stack : count;
         slots[i].item = item;
         slots[i].count = (uint8_t)moved;
+        slots[i].damage = 0;
         count -= moved;
     }
     return count == 0;
@@ -238,6 +282,7 @@ bool inventory_remove(BgStack *slots, uint16_t item, int count) {
         count -= taken;
         if (slots[i].count == 0) {
             slots[i].item = BG_AIR;
+            slots[i].damage = 0;
         }
     }
     return true;
@@ -248,51 +293,63 @@ bool inventory_remove(BgStack *slots, uint16_t item, int count) {
 static const BgRecipe kRecipes[] = {
     {
         { { BG_WOOD, 1 } }, 1,
-        { BG_PLANKS, 4 }, false
+        { BG_PLANKS, 4, 0 }, false
     },
     {
         { { BG_PLANKS, 2 } }, 1,
-        { BG_ITEM_STICK, 4 }, false
+        { BG_ITEM_STICK, 4, 0 }, false
     },
     {
         { { BG_PLANKS, 4 } }, 1,
-        { BG_CRAFTING_TABLE, 1 }, false
+        { BG_CRAFTING_TABLE, 1, 0 }, false
     },
     {
         { { BG_STONE, 4 } }, 1,
-        { BG_BRICK, 4 }, false
+        { BG_BRICK, 4, 0 }, false
     },
     {
         { { BG_ITEM_ASH_DUST, 2 }, { BG_STONE, 2 } }, 2,
-        { BG_ASHBLOCK, 2 }, false
+        { BG_ASHBLOCK, 2, 0 }, false
     },
     {
         { { BG_ITEM_EMBER_SHARD, 2 }, { BG_STONE, 3 } }, 2,
-        { BG_LUMENSTONE, 2 }, true
+        { BG_LUMENSTONE, 2, 0 }, true
     },
     {
         { { BG_ITEM_EMBER_SHARD, 1 }, { BG_ITEM_ASH_DUST, 2 } }, 2,
-        { BG_CINDERBRICK, 2 }, true
+        { BG_CINDERBRICK, 2, 0 }, true
     },
     {
         { { BG_ITEM_EMBER_SHARD, 4 } }, 1,
-        { BG_VOIDSTONE, 2 }, true
+        { BG_VOIDSTONE, 2, 0 }, true
     },
     {
         { { BG_ITEM_MEAT, 2 }, { BG_ITEM_ASH_DUST, 1 } }, 2,
-        { BG_GLOWMOSS, 1 }, true
+        { BG_GLOWMOSS, 1, 0 }, true
     },
     {
         { { BG_PLANKS, 3 }, { BG_ITEM_STICK, 2 } }, 2,
-        { BG_ITEM_WOOD_PICK, 1 }, true
+        { BG_ITEM_WOOD_PICK, 1, 0 }, true
     },
     {
         { { BG_STONE, 3 }, { BG_ITEM_STICK, 2 } }, 2,
-        { BG_ITEM_STONE_PICK, 1 }, true
+        { BG_ITEM_STONE_PICK, 1, 0 }, true
     },
     {
         { { BG_ITEM_EMBER_SHARD, 3 }, { BG_ITEM_STICK, 2 } }, 2,
-        { BG_ITEM_EMBER_PICK, 1 }, true
+        { BG_ITEM_EMBER_PICK, 1, 0 }, true
+    },
+    {
+        { { BG_ITEM_STICK, 1 }, { BG_ITEM_EMBER_SHARD, 1 } }, 2,
+        { BG_TORCH, 4, 0 }, false
+    },
+    {
+        { { BG_PLANKS, 8 } }, 1,
+        { BG_CHEST, 1, 0 }, false
+    },
+    {
+        { { BG_ITEM_EMBER_SHARD, 3 }, { BG_ITEM_ASH_DUST, 2 } }, 2,
+        { BG_ITEM_RIFT_KEY, 1, 0 }, true
     }
 };
 

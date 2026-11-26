@@ -28,6 +28,9 @@ typedef struct BgRenderer {
     size_t chunk_count, chunk_capacity;
     float sky[3], fog_color[3], ambient[3], light_color[3];
     float fog_start, fog_density;
+    float sun_phase;       /* 0 dawn, 0.25 noon, 0.5 dusk, 0.75 midnight */
+    float sun_strength;    /* 1 in daylight, 0 at night */
+    Dimension dimension;
     int draw_calls;
     int width, height;
 } BgRenderer;
@@ -42,10 +45,15 @@ typedef struct BgUi {
 bool renderer_init(BgRenderer *renderer);
 void renderer_shutdown(BgRenderer *renderer);
 void renderer_set_environment(BgRenderer *renderer, Dimension dimension);
+
+/* Time of day, 0..1; tints sky, fog and ambient and moves the sun. */
+void renderer_set_time(BgRenderer *renderer, float phase);
 void renderer_upload_chunk(BgRenderer *renderer, uint64_t key, const BgMesh *mesh);
 void renderer_clear_chunks(BgRenderer *renderer);
 void renderer_draw(BgRenderer *renderer, const BgCamera *camera);
 void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera, const BgMobWorld *mobs);
+void renderer_draw_drops(BgRenderer *renderer, const BgCamera *camera, const BgDrop *drops,
+                         int drop_count);
 void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player);
 void renderer_get_size(BgRenderer *renderer, int *width, int *height);
 

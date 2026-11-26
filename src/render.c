@@ -13,12 +13,14 @@ static const char *kWorldVertex =
     "layout(location = 1) in vec3 aNormal;\n"
     "layout(location = 2) in vec2 aUV;\n"
     "layout(location = 3) in float aAO;\n"
+    "layout(location = 4) in float aLight;\n"
     "uniform mat4 model;\n"
     "uniform mat4 view;\n"
     "uniform mat4 projection;\n"
     "out vec3 vNormal;\n"
     "out vec2 vUV;\n"
     "out float vAO;\n"
+    "out float vLight;\n"
     "out vec3 vWorldPos;\n"
     "void main() {\n"
     "    vec4 world = model * vec4(aPos, 1.0);\n"
@@ -26,6 +28,7 @@ static const char *kWorldVertex =
     "    vNormal = mat3(model) * aNormal;\n"
     "    vUV = aUV;\n"
     "    vAO = aAO;\n"
+    "    vLight = aLight;\n"
     "    gl_Position = projection * view * world;\n"
     "}\n";
 
@@ -34,6 +37,7 @@ static const char *kWorldFragment =
     "in vec3 vNormal;\n"
     "in vec2 vUV;\n"
     "in float vAO;\n"
+    "in float vLight;\n"
     "in vec3 vWorldPos;\n"
     "out vec4 FragColor;\n"
     "uniform sampler2D texAtlas;\n"
@@ -51,7 +55,7 @@ static const char *kWorldFragment =
     "    else if (n.y < -0.5) faceShade = 0.52;\n"
     "    else if (abs(n.x) > 0.5) faceShade = 0.82;\n"
     "    vec3 lit = ambientColor * 0.92 + lightColor * 0.55;\n"
-    "    vec3 color = base * faceShade * lit * mix(0.45, 1.0, vAO);\n"
+    "    vec3 color = base * faceShade * lit * mix(0.45, 1.0, vAO) * vLight;\n"
     "    float distanceToCamera = length(vWorldPos - viewPos);\n"
     "    float fog = clamp((distanceToCamera - fogStart) * fogDensity, 0.0, 1.0);\n"
     "    FragColor = vec4(mix(color, fogColor, fog), 1.0);\n"
@@ -205,7 +209,7 @@ typedef struct {
     Pattern pattern;
 } TileDef;
 
-static const TileDef kTiles[32] = {
+static const TileDef kTiles[44] = {
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },      /* void */
     { 126, 126, 131,  86,  86,  92, PAT_COBBLE },      /* stone */
     { 120,  86,  58,  86,  60,  40, PAT_DIRT },        /* dirt */
@@ -237,7 +241,17 @@ static const TileDef kTiles[32] = {
     {  84,  42, 150, 214, 140, 255, PAT_SWIRL },       /* rift portal */
     {  68, 148, 120, 176, 255, 214, PAT_MOSS },        /* glowmoss */
     {  76,  72,  74, 106, 102, 102, PAT_CHUNKY },      /* cinderstone */
-    { 178, 172, 162, 146, 140, 132, PAT_ASH }          /* ashblock */
+    { 178, 172, 162, 146, 140, 132, PAT_ASH },         /* ashblock */
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },       /* item sprites 32..38 */
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
+    [40] = { 196, 148,  82, 255, 226, 150, PAT_FLAT },  /* torch */
+    [41] = { 150, 102,  54,  96,  62,  30, PAT_PLANKS }, /* chest side */
+    [42] = { 168, 122,  66,  96,  62,  30, PAT_GRID }    /* chest top */
 };
 
 static uint32_t pixel_hash(int tile, int px, int py) {
@@ -506,7 +520,7 @@ static unsigned char g_atlas_pixels[ATLAS_WIDTH * ATLAS_HEIGHT * 4];
 /* Items are not blocks, so they get their own 32x32 tiles: an 8x8 pixel-art
  * sprite scaled 4x with a transparent background the hotbar lets through. */
 #define ITEM_TILE_BASE 32
-#define ITEM_TILE_COUNT 7
+#define ITEM_TILE_COUNT 9
 
 typedef struct {
     const char *rows[8];
@@ -548,6 +562,16 @@ static const ItemArt kItemArt[ITEM_TILE_COUNT] = {
         { "..1221..", ".1....21", "12..11.2", "...33...",
           "...34...", "...34...", "...34...", "...34..." },
         { { 196,  84,  30 }, { 255, 206, 120 }, { 108,  80,  46 }, { 146, 112,  68 } }
+    },
+    {   /* rift key */
+        { "...11...", "..1221..", "..1331..", "..1331..",
+          "..1331..", "..1221..", "...33...", "...34..." },
+        { {  84,  42, 150 }, { 214, 140, 255 }, { 255, 214, 120 }, { 176, 128,  60 } }
+    },
+    {   /* emberheart */
+        { "..1..1..", ".121121.", "12222221", "12333221",
+          ".123321.", "..1331..", "...11...", "........" },
+        { {  86,  28,  10 }, { 222, 100,  30 }, { 255, 214, 120 }, { 255, 160,  60 } }
     }
 };
 
@@ -674,6 +698,8 @@ bool renderer_init(BgRenderer *renderer) {
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, uv));
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
     glBindVertexArray(0);
 
     glGenVertexArrays(1, &renderer->mob_vao);
@@ -690,6 +716,8 @@ bool renderer_init(BgRenderer *renderer) {
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, uv));
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
     glBindVertexArray(0);
 
     glGenVertexArrays(1, &renderer->ui_vao);
@@ -733,6 +761,7 @@ void renderer_shutdown(BgRenderer *renderer) {
 }
 
 void renderer_set_environment(BgRenderer *renderer, Dimension dimension) {
+    renderer->dimension = dimension;
     if (dimension == BG_UNDERWORLD) {
         const float sky[3] = { 0.10f, 0.03f, 0.03f };
         const float fog[3] = { 0.20f, 0.05f, 0.04f };
@@ -756,6 +785,48 @@ void renderer_set_environment(BgRenderer *renderer, Dimension dimension) {
         renderer->fog_start = 80.0f;
         renderer->fog_density = 0.0018f;
     }
+}
+
+static float lerp_f(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+/* Blends the day and night palettes and remembers where the sun is. */
+void renderer_set_time(BgRenderer *renderer, float phase) {
+    phase -= floorf(phase);
+    renderer->sun_phase = phase;
+    const float elevation = sinf(phase * 6.2831853f);
+    float day = (elevation + 0.16f) / 0.46f;
+    if (day < 0.0f) day = 0.0f;
+    if (day > 1.0f) day = 1.0f;
+    renderer->sun_strength = day;
+
+    if (renderer->dimension == BG_UNDERWORLD) {
+        return; /* The rift realm glows the same no matter the hour. */
+    }
+
+    const float dusk = expf(-elevation * elevation * 16.0f);
+    const float day_sky[3] = { 0.52f, 0.72f, 0.95f };
+    const float night_sky[3] = { 0.015f, 0.025f, 0.07f };
+    const float dusk_sky[3] = { 0.48f, 0.26f, 0.22f };
+    const float day_fog[3] = { 0.62f, 0.78f, 0.96f };
+    const float night_fog[3] = { 0.035f, 0.045f, 0.10f };
+    const float dusk_fog[3] = { 0.62f, 0.34f, 0.24f };
+    const float day_amb[3] = { 0.44f, 0.44f, 0.46f };
+    const float night_amb[3] = { 0.09f, 0.11f, 0.18f };
+    const float day_light[3] = { 1.0f, 0.98f, 0.90f };
+    const float night_light[3] = { 0.26f, 0.30f, 0.44f };
+
+    for (int i = 0; i < 3; ++i) {
+        const float sky = lerp_f(night_sky[i], day_sky[i], day);
+        const float fog = lerp_f(night_fog[i], day_fog[i], day);
+        renderer->sky[i] = lerp_f(sky, dusk_sky[i], dusk * 0.55f);
+        renderer->fog_color[i] = lerp_f(fog, dusk_fog[i], dusk * 0.55f);
+        renderer->ambient[i] = lerp_f(night_amb[i], day_amb[i], day);
+        renderer->light_color[i] = lerp_f(night_light[i], day_light[i], day);
+    }
+    renderer->fog_start = lerp_f(46.0f, 80.0f, day);
+    renderer->fog_density = lerp_f(0.0036f, 0.0018f, day);
 }
 
 static BgChunkDraw *find_chunk_draw(BgRenderer *renderer, uint64_t key) {
@@ -804,6 +875,8 @@ void renderer_upload_chunk(BgRenderer *renderer, uint64_t key, const BgMesh *mes
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, uv));
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
         glBindVertexArray(0);
     }
 
@@ -835,7 +908,7 @@ void renderer_get_size(BgRenderer *renderer, int *width, int *height) {
     if (height) *height = renderer->height;
 }
 
-static void draw_sky(BgRenderer *renderer) {
+static void draw_sky(BgRenderer *renderer, const BgCamera *camera) {
     int width = 1280;
     int height = 720;
     renderer_get_size(renderer, &width, &height);
@@ -864,6 +937,85 @@ static void draw_sky(BgRenderer *renderer) {
     glBindBuffer(GL_ARRAY_BUFFER, renderer->ui_vbo);
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(verts), verts, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    if (renderer->dimension == BG_UPPERWORLD) {
+        const float phase = renderer->sun_phase;
+        const float tan_half = tanf(camera->fov * 0.5f);
+        const float aspect = camera->aspect > 0.0001f ? camera->aspect : 16.0f / 9.0f;
+        const float cp = cosf(camera->pitch);
+        const float forward[3] = { cp * cosf(camera->yaw), sinf(camera->pitch),
+                                   cp * sinf(camera->yaw) };
+        const float right[3] = { -sinf(camera->yaw), 0.0f, cosf(camera->yaw) };
+        const float up[3] = { right[1] * forward[2] - right[2] * forward[1],
+                              right[2] * forward[0] - right[0] * forward[2],
+                              right[0] * forward[1] - right[1] * forward[0] };
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        /* Stars fade in as the sun sets. */
+        const float night = clamp01(-sinf(phase * 6.2831853f) * 2.2f);
+        if (night > 0.05f) {
+            float star_verts[6 * 6 * 48];
+            int used = 0;
+            for (int i = 0; i < 48; ++i) {
+                const float sx = (float)((i * 92821 + 17) % 1000) / 1000.0f * w;
+                const float sy = (float)((i * 68917 + 53) % 620) / 620.0f * h * 0.7f;
+                const float size = 1.5f + (float)(i % 3);
+                const float a = night * (0.35f + (float)(i % 5) * 0.12f);
+                const float quad[6][6] = {
+                    { sx, sy, 1, 1, 1, a }, { sx + size, sy, 1, 1, 1, a },
+                    { sx + size, sy + size, 1, 1, 1, a },
+                    { sx, sy, 1, 1, 1, a }, { sx + size, sy + size, 1, 1, 1, a },
+                    { sx, sy + size, 1, 1, 1, a }
+                };
+                for (int v = 0; v < 6; ++v) {
+                    for (int k = 0; k < 6; ++k) {
+                        star_verts[used++] = quad[v][k];
+                    }
+                }
+            }
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(float) * (size_t)used),
+                         star_verts, GL_STREAM_DRAW);
+            glDrawArrays(GL_TRIANGLES, 0, used / 6);
+        }
+
+        /* The sun and moon ride the same arc, half a cycle apart. */
+        for (int body = 0; body < 2; ++body) {
+            const float body_phase = phase + (body ? 0.5f : 0.0f);
+            const float elevation = sinf(body_phase * 6.2831853f);
+            if (elevation < -0.06f) {
+                continue;
+            }
+            const float azimuth = body_phase * 6.2831853f;
+            const float ce = cosf(elevation * 1.2f);
+            const float dir[3] = { cosf(azimuth) * ce, elevation, sinf(azimuth) * ce };
+            const float vz = dir[0] * forward[0] + dir[1] * forward[1] + dir[2] * forward[2];
+            if (vz < 0.18f) {
+                continue;
+            }
+            const float vx = dir[0] * right[0] + dir[1] * right[1] + dir[2] * right[2];
+            const float vy = dir[0] * up[0] + dir[1] * up[1] + dir[2] * up[2];
+            const float sx = w * 0.5f + (vx / vz) * (w * 0.5f / tan_half) / aspect;
+            const float sy = h * 0.5f - (vy / vz) * (h * 0.5f / tan_half);
+            const float size = body ? 62.0f : 96.0f;
+            const float alpha = clamp01(elevation * 3.0f + 0.4f);
+            const float tint[3] = { body ? 0.82f : 1.0f, body ? 0.86f : 0.94f,
+                                    body ? 0.92f : 0.68f };
+            const float quad[6][6] = {
+                { sx - size, sy - size, tint[0], tint[1], tint[2], alpha },
+                { sx + size, sy - size, tint[0], tint[1], tint[2], alpha },
+                { sx + size, sy + size, tint[0], tint[1], tint[2], alpha },
+                { sx - size, sy - size, tint[0], tint[1], tint[2], alpha },
+                { sx + size, sy + size, tint[0], tint[1], tint[2], alpha },
+                { sx - size, sy + size, tint[0], tint[1], tint[2], alpha }
+            };
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(quad), quad, GL_STREAM_DRAW);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        glDisable(GL_BLEND);
+    }
+
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
@@ -874,7 +1026,7 @@ void renderer_draw(BgRenderer *renderer, const BgCamera *camera) {
 
     glClearColor(renderer->sky[0], renderer->sky[1], renderer->sky[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    draw_sky(renderer);
+    draw_sky(renderer, camera);
 
     float view[16];
     float projection[16];
@@ -1205,6 +1357,8 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
             skin = BG_EMBERSTONE;
         } else if (type == MOB_ASH_WISP) {
             skin = BG_LUMENSTONE;
+        } else if (type == MOB_CINDER_ALPHA) {
+            skin = BG_CINDERBRICK;
         }
         if (mob->hurt_timer > 0.0f) {
             skin = BG_PALE_QUARTZ;
@@ -1234,6 +1388,77 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
     camera_view_matrix(camera, view);
     camera_projection_matrix(camera, projection);
 
+    const float identity[16] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    };
+
+    glUseProgram(renderer->program);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "model"), 1, GL_FALSE, identity);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "view"), 1, GL_FALSE, view);
+    glUniformMatrix4fv(glGetUniformLocation(renderer->program, "projection"), 1, GL_FALSE,
+                       projection);
+    glUniform3f(glGetUniformLocation(renderer->program, "viewPos"), camera->x, camera->y,
+                camera->z);
+    glUniform3fv(glGetUniformLocation(renderer->program, "ambientColor"), 1, renderer->ambient);
+    glUniform3fv(glGetUniformLocation(renderer->program, "lightColor"), 1, renderer->light_color);
+    glUniform3fv(glGetUniformLocation(renderer->program, "fogColor"), 1, renderer->fog_color);
+    glUniform1f(glGetUniformLocation(renderer->program, "fogStart"), renderer->fog_start);
+    glUniform1f(glGetUniformLocation(renderer->program, "fogDensity"), renderer->fog_density);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderer->atlas);
+    glUniform1i(glGetUniformLocation(renderer->program, "texAtlas"), 0);
+
+    glBindVertexArray(renderer->mob_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->mob_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)(mesh->vertex_count * sizeof(BgVertex)), mesh->vertices,
+                 GL_STREAM_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->mob_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 (GLsizeiptr)(mesh->index_count * sizeof(uint32_t)), mesh->indices,
+                 GL_STREAM_DRAW);
+    glDrawElements(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_INT, NULL);
+    glBindVertexArray(0);
+    renderer->draw_calls++;
+}
+
+void renderer_draw_drops(BgRenderer *renderer, const BgCamera *camera, const BgDrop *drops,
+                         int drop_count) {
+    if (!renderer->mob_vao || !renderer->program || !drops) {
+        return;
+    }
+
+    BgMesh *mesh = &renderer->mob_mesh;
+    mesh_reset(mesh);
+    int drawn = 0;
+    for (int i = 0; i < MAX_DROPS && i < drop_count; ++i) {
+        const BgDrop *drop = &drops[i];
+        if (!drop->alive) {
+            continue;
+        }
+        BlockId skin = BG_PALE_QUARTZ;
+        if (drop->item < BG_BLOCK_COUNT) {
+            skin = (BlockId)drop->item;
+        } else if (drop->item == BG_ITEM_EMBER_SHARD || drop->item == BG_ITEM_EMBERHEART) {
+            skin = BG_LUMENSTONE;
+        }
+        const float bob = sinf(drop->age * 2.6f) * 0.06f;
+        const float half[3] = { 0.13f, 0.13f, 0.13f };
+        const float center[3] = { drop->x, drop->y + 0.2f + bob, drop->z };
+        mesh_box(mesh, center, half, skin);
+        drawn++;
+    }
+    if (drawn == 0 || mesh->index_count == 0) {
+        return;
+    }
+
+    float view[16];
+    float projection[16];
+    camera_view_matrix(camera, view);
+    camera_projection_matrix(camera, projection);
     const float identity[16] = {
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -1420,6 +1645,16 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
                     bar_y + slot - 11.0f, 1.6f, text, shadow);
             ui_text(&ui, x + slot - 2.0f - ui_text_width(text, 1.6f),
                     bar_y + slot - 12.0f, 1.6f, text, count_color);
+        }
+        const int wear = item_durability_max(stack->item);
+        if (wear > 0 && stack->damage > 0) {
+            const float left = 1.0f - (float)stack->damage / (float)wear;
+            const float bar_w = (slot - 8.0f) * clamp01(left);
+            const float wear_color[4] = { clamp01(1.4f - left * 1.4f),
+                                          clamp01(0.5f + left * 0.9f), 0.18f, 0.98f };
+            ui_rect(&ui, x + 4.0f, bar_y + slot - 6.0f, slot - 8.0f, 2.0f,
+                    (float[4]){ 0.05f, 0.05f, 0.06f, 0.9f });
+            ui_rect(&ui, x + 4.0f, bar_y + slot - 6.0f, bar_w, 2.0f, wear_color);
         }
     }
 

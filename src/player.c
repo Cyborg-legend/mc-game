@@ -62,7 +62,32 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
     if (dt > 0.05f) {
         dt = 0.05f;
     }
-    if (!player->on_ground) {
+
+    const bool was_on_ground = player->on_ground;
+    const int foot_x = (int)floorf(player->x);
+    const int foot_z = (int)floorf(player->z);
+    const bool in_water =
+        block_liquid(world_get_block(world, foot_x, (int)floorf(player->y + 0.2f), foot_z)) ||
+        block_liquid(world_get_block(world, foot_x, (int)floorf(player->y + 0.9f), foot_z));
+    const bool head_under =
+        block_liquid(world_get_block(world, foot_x,
+                                     (int)floorf(player->y + EYE_HEIGHT), foot_z));
+
+    if (in_water) {
+        /* Buoyancy plus drag: sink slowly, swim up with jump, dive with sprint. */
+        player->vy -= GRAVITY * 0.16f * dt;
+        player->vy *= 1.0f - 3.2f * dt;
+        if (input->keys[GLFW_KEY_SPACE]) {
+            player->vy = 4.2f;
+            player->on_ground = false;
+        } else if (input->keys[GLFW_KEY_LEFT_SHIFT] && player->vy > -3.2f) {
+            player->vy = -3.2f;
+        }
+        if (player->vy < -3.2f) {
+            player->vy = -3.2f;
+        }
+        player->fall_distance = 0.0f;
+    } else if (!player->on_ground) {
         player->vy -= GRAVITY * dt;
     }
 
@@ -84,11 +109,13 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
         wish_z /= length;
     }
 
-    const float speed = input->keys[GLFW_KEY_LEFT_SHIFT] ? SPRINT_SPEED : WALK_SPEED;
+    const float speed = in_water ? 2.9f
+                                 : (input->keys[GLFW_KEY_LEFT_SHIFT] ? SPRINT_SPEED
+                                                                     : WALK_SPEED);
     player->vx = wish_x * speed;
     player->vz = wish_z * speed;
 
-    if (input->keys[GLFW_KEY_SPACE] && player->on_ground) {
+    if (!in_water && input->keys[GLFW_KEY_SPACE] && player->on_ground) {
         player->vy = JUMP_SPEED;
         player->on_ground = false;
     }
@@ -134,6 +161,33 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
         player->y = 0.0f;
         player->vy = 0.0f;
         player->on_ground = true;
+    }
+
+    /* Falling hurts; water breaks the fall. */
+    if (!in_water && !player->on_ground && player->vy < 0.0f) {
+        player->fall_distance += -player->vy * dt;
+    }
+    if (in_water) {
+        player->fall_distance = 0.0f;
+    }
+    if (player->on_ground && !was_on_ground) {
+        if (player->fall_distance > 3.5f) {
+            int damage = (int)(player->fall_distance - 3.0f);
+            if (damage < 1) damage = 1;
+            player->health -= damage;
+        }
+        player->fall_distance = 0.0f;
+    }
+
+    /* Ten seconds of head-under-water starts to hurt. */
+    if (head_under) {
+        player->drown_timer += dt;
+        if (player->drown_timer > 12.0f) {
+            player->health -= 2;
+            player->drown_timer = 10.0f;
+        }
+    } else {
+        player->drown_timer = 0.0f;
     }
 }
 

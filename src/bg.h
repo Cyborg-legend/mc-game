@@ -45,6 +45,8 @@ typedef enum {
     BG_GLOWMOSS,
     BG_CINDERSTONE,
     BG_ASHBLOCK,
+    BG_TORCH,
+    BG_CHEST,
     BG_BLOCK_COUNT
 } BlockId;
 
@@ -67,6 +69,9 @@ int block_tile(BlockId block, int face);
 
 typedef struct Chunk {
     BlockId blocks[CHUNK_VOLUME];
+    /* Sky light in the high nibble, block light in the low one. Derived data:
+     * it is rebuilt from the blocks whenever a save is loaded. */
+    uint8_t light[CHUNK_VOLUME];
     int cx, cy, cz;
 } Chunk;
 
@@ -76,12 +81,25 @@ typedef struct ChunkSlot {
     bool used;
 } ChunkSlot;
 
+#define CHEST_SLOTS 27
+
+typedef struct BgContainer BgContainer;
+
 typedef struct World {
     ChunkSlot *slots;
     size_t capacity;
     size_t count;
     Dimension dimension;
     uint64_t seed;
+    struct BgContainer *containers;
+    size_t container_count;
+    size_t container_capacity;
+    /* Paused while a whole region is being generated or rebuilt, so the light
+     * flood fill runs once instead of once per block. */
+    bool defer_light;
+    float time_of_day;   /* 0 = dawn, 0.25 = noon, 0.5 = dusk, 0.75 = midnight */
+    uint8_t quest_stage;
+    bool boss_defeated;
 } World;
 
 void world_init(World *world);
@@ -100,6 +118,26 @@ void world_set_block(World *world, int x, int y, int z, BlockId block);
 void world_generate_around(World *world, int center_cx, int center_cz, int radius);
 int world_surface_y(const World *world, int x, int z);
 size_t world_chunk_count(const World *world);
+
+/* ---- Lighting -------------------------------------------------------- */
+
+/* How much light a block gives off, 0 for none. */
+int block_light_emit(BlockId block);
+
+/* Combined sky/block light (high nibble / low nibble) at a cell. Unloaded
+ * cells report full sky light so the edge of the view is never black. */
+uint8_t world_light_at(const World *world, int x, int y, int z);
+
+/* Rebuilds sky and block light for everything inside the box. */
+void world_relight(World *world, int x0, int z0, int x1, int z1);
+
+/* Rebuilds light for every chunk currently loaded. */
+void world_relight_all(World *world);
+
+/* ---- Chests ---------------------------------------------------------- */
+
+BgContainer *world_container_at(World *world, int x, int y, int z, bool create);
+void world_container_remove(World *world, int x, int y, int z);
 
 /* Open, dry ground near the origin, where a fresh Upperworld begins. */
 void world_spawn_site(const World *world, int *spawn_x, int *spawn_z);
@@ -133,8 +171,8 @@ void rift_build(World *world, int cx, int cy, int cz, int axis);
 
 /* ---- Items and inventory --------------------------------------------- */
 
-/* The pack is the nine-slot hotbar, so every item is placeable. */
-#define INVENTORY_SLOTS 9
+/* Nine hotbar slots on top, eighteen backpack slots behind them. */
+#define INVENTORY_SLOTS 27
 #define HOTBAR_SLOTS 9
 #define MAX_STACK 64
 
@@ -148,13 +186,24 @@ typedef enum {
     BG_ITEM_WOOD_PICK,
     BG_ITEM_STONE_PICK,
     BG_ITEM_EMBER_PICK,
+    BG_ITEM_RIFT_KEY,
+    BG_ITEM_EMBERHEART,
     BG_ITEM_COUNT
 } ItemId;
 
 typedef struct BgStack {
     uint16_t item;
     uint8_t count;
+    /* Points of wear on a tool; 0 is fresh. */
+    uint8_t damage;
 } BgStack;
+
+/* A chest's contents live beside the world rather than in a chunk, so they
+ * survive the block staying put and are saved in one small list. */
+typedef struct BgContainer {
+    int x, y, z;
+    BgStack slots[CHEST_SLOTS];
+} BgContainer;
 
 const char *item_name(uint16_t item);
 bool item_block(uint16_t item, BlockId *block);
@@ -174,6 +223,13 @@ float block_hardness(BlockId block);
 
 /* How much faster than bare hands the held pick is; 1.0 when it is no pick. */
 float item_pick_speed(uint16_t item);
+
+/* Stack limit (1 for tools) and the wear a fresh tool can take. */
+int item_max_stack(uint16_t item);
+int item_durability_max(uint16_t item);
+
+/* One point of wear; true when the tool just broke. */
+bool item_wear(BgStack *stack, int amount);
 
 int inventory_count(const BgStack *slots, uint16_t item);
 bool inventory_add(BgStack *slots, uint16_t item, int count);
@@ -209,6 +265,7 @@ typedef enum {
     MOB_GRAZER = 0,
     MOB_CINDER_HOUND,
     MOB_ASH_WISP,
+    MOB_CINDER_ALPHA,
     MOB_TYPE_COUNT
 } MobType;
 
@@ -241,6 +298,10 @@ bool mob_hostile(MobType type);
 
 void mobs_init(BgMobWorld *mobs);
 void mobs_clear(BgMobWorld *mobs);
+
+/* Places the Cinder Alpha near the player (Underworld only); false when there
+ * is no room for it. */
+bool mobs_spawn_boss(BgMobWorld *mobs, World *world, float x, float y, float z);
 void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt);
 
 /* Index of the mob under the crosshair, -1 when there is none or a block is
@@ -263,6 +324,7 @@ typedef struct BgVertex {
     float normal[3];
     float uv[2];
     float ao;
+    float light;
 } BgVertex;
 
 typedef struct BgMesh {
@@ -300,6 +362,10 @@ struct BgPlayer {
     int health;
     int selected;
     float invuln;
+    /* Transient state: how far the current fall has dropped, and how long the
+     * head has been under water. Neither is saved. */
+    float fall_distance;
+    float drown_timer;
     BgStack inventory[INVENTORY_SLOTS];
 };
 
@@ -314,5 +380,26 @@ bool player_place(BgPlayer *player, World *world, BlockId block, int *px, int *p
 
 bool save_world(const char *path, const World *world, const BgPlayer *player);
 bool load_world(const char *path, World *world, BgPlayer *player);
+
+/* ---- Dropped items --------------------------------------------------- */
+
+#define MAX_DROPS 64
+
+typedef struct BgDrop {
+    float x, y, z;
+    float vx, vy, vz;
+    float age;
+    uint16_t item;
+    uint8_t count;
+    bool alive;
+} BgDrop;
+
+/* Throws a stack on the ground in front of the player. */
+bool world_drop_item(BgDrop *drops, int *drop_count, const BgPlayer *player,
+                     uint16_t item, int count);
+
+/* Applies gravity, picks items up when the player is close. */
+void drops_update(BgDrop *drops, int *drop_count, const World *world, BgPlayer *player,
+                  float dt);
 
 #endif /* BLOCKFORGE_C_BG_H */

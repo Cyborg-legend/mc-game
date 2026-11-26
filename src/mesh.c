@@ -30,6 +30,60 @@ static bool solid_at(const World *world, int x, int y, int z) {
     return block_collidable(world_get_block(world, x, y, z));
 }
 
+/* Baked light for a face, sampled from the air cell it looks into. */
+static float light_factor(const World *world, int x, int y, int z) {
+    const uint8_t value = world_light_at(world, x, y, z);
+    const int sky = value >> 4;
+    const int block = value & 15;
+    const int level = sky > block ? sky : block;
+    return 0.18f + 0.82f * (float)level / 15.0f;
+}
+
+static bool reserve_vertices(BgMesh *mesh, size_t *capacity, size_t needed);
+static bool reserve_indices(BgMesh *mesh, size_t *capacity, size_t needed);
+
+/* A torch is a thin post rather than a cube, so it gets its own geometry. */
+static bool emit_torch(BgMesh *mesh, int wx, int wy, int wz) {
+    const float min[3] = { (float)wx + 0.42f, (float)wy, (float)wz + 0.42f };
+    const float max[3] = { (float)wx + 0.58f, (float)wy + 0.62f, (float)wz + 0.58f };
+    const float tiles_per_row = 16.0f;
+    const float tile_size = 1.0f / tiles_per_row;
+    const float pad = tile_size * 0.002f;
+    const float span = tile_size - 2.0f * pad;
+    const int tile = block_tile(BG_TORCH, 0);
+    const float tu = (float)(tile % 16) * tile_size;
+    const float tv = (float)(tile / 16) * tile_size;
+    const float corner_u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
+    const float corner_v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+
+    for (int face = 0; face < 6; ++face) {
+        if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
+            !reserve_indices(mesh, &mesh->index_capacity, mesh->index_count + 6)) {
+            return false;
+        }
+        const uint32_t base = (uint32_t)mesh->vertex_count;
+        for (int c = 0; c < 4; ++c) {
+            BgVertex *vertex = &mesh->vertices[mesh->vertex_count++];
+            for (int axis = 0; axis < 3; ++axis) {
+                const float t = (float)kCornerOffsets[face][c][axis];
+                vertex->pos[axis] = min[axis] + (max[axis] - min[axis]) * t;
+                vertex->normal[axis] = kFaceNormals[face][axis];
+            }
+            vertex->uv[0] = tu + pad + corner_u[c] * span;
+            vertex->uv[1] = tv + pad + corner_v[c] * span;
+            vertex->ao = 1.0f;
+            vertex->light = 1.0f;
+        }
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 1;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 3;
+    }
+    return true;
+}
+
 /* Isotropic tiles survive any quarter turn, so a field of stone or dirt can be
  * spun per block instead of repeating one stamp over and over. */
 static bool tile_rotates(BlockId block) {
@@ -145,6 +199,11 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                 const int world_y = chunk->cy * CHUNK_SIZE + y;
                 const int world_z = chunk->cz * CHUNK_SIZE + z;
 
+                if (block == BG_TORCH) {
+                    emit_torch(mesh, world_x, world_y, world_z);
+                    continue;
+                }
+
                 for (int face = 0; face < 6; ++face) {
                     const int nx = world_x + (int)kFaceNormals[face][0];
                     const int ny = world_y + (int)kFaceNormals[face][1];
@@ -219,6 +278,7 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                         vertex->uv[0] = tu + pad + u * span;
                         vertex->uv[1] = tv + pad + v * span;
                         vertex->ao = ao[c];
+                        vertex->light = light_factor(world, nx, ny, nz);
                     }
 
                     /* Split along the darker diagonal so AO gradients stay smooth. */
@@ -274,6 +334,7 @@ void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId 
             vertex->uv[0] = tu + pad + corner_u[c] * span;
             vertex->uv[1] = tv + pad + corner_v[c] * span;
             vertex->ao = face_ao[face];
+            vertex->light = 1.0f;
         }
 
         mesh->indices[mesh->index_count++] = base + 0;

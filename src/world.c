@@ -19,7 +19,8 @@ bool block_portal(BlockId block) {
 }
 
 bool block_collidable(BlockId block) {
-    return block != BG_AIR && !block_liquid(block) && !block_portal(block);
+    return block != BG_AIR && block != BG_TORCH && !block_liquid(block) &&
+           !block_portal(block);
 }
 
 bool block_breakable(BlockId block) {
@@ -157,6 +158,7 @@ void world_init(World *world) {
 
 void world_free(World *world) {
     free(world->slots);
+    free(world->containers);
     memset(world, 0, sizeof(*world));
 }
 
@@ -165,6 +167,10 @@ void world_clear(World *world) {
         memset(world->slots, 0, world->capacity * sizeof(ChunkSlot));
     }
     world->count = 0;
+    world->container_count = 0;
+    world->time_of_day = 0.18f;
+    world->quest_stage = 0;
+    world->boss_defeated = false;
 }
 
 void world_set_dimension(World *world, Dimension dimension) {
@@ -202,6 +208,7 @@ Chunk *world_chunk(World *world, int cx, int cy, int cz, bool create) {
     }
     Chunk *chunk = &world->slots[index].chunk;
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
+    memset(chunk->light, 0, sizeof(chunk->light));
     chunk->cx = cx;
     chunk->cy = cy;
     chunk->cz = cz;
@@ -252,10 +259,226 @@ void world_set_block(World *world, int x, int y, int z, BlockId block) {
         return;
     }
     chunk->blocks[((y & 15) * CHUNK_SIZE + (z & 15)) * CHUNK_SIZE + (x & 15)] = block;
+
+    /* An edit can darken or light a cave up to the light radius away. */
+    if (!world->defer_light) {
+        world_relight(world, x - 16, z - 16, x + 16, z + 16);
+    }
 }
 
 size_t world_chunk_count(const World *world) {
     return world->count;
+}
+
+/* ------------------------------------------------------------- lighting */
+
+static bool light_opaque(BlockId block) {
+    /* Leaves and water shade a little rather than sealing light off. */
+    if (block == BG_LEAVES || block == BG_BLOODLEAVES || block == BG_WATER) {
+        return false;
+    }
+    return block_collidable(block);
+}
+
+int block_light_emit(BlockId block) {
+    switch (block) {
+        case BG_TORCH:      return 14;
+        case BG_LUMENSTONE: return 14;
+        case BG_PORTAL:     return 12;
+        case BG_MAGMA:      return 10;
+        case BG_EMBERLODE:  return 7;
+        case BG_GLOWMOSS:   return 6;
+        default:            return 0;
+    }
+}
+
+static uint8_t *light_cell(World *world, int x, int y, int z) {
+    if (y < 0 || y >= UNDERWORLD_TOP) {
+        return NULL;
+    }
+    Chunk *chunk = chunk_find(world, x >> 4, y >> 4, z >> 4);
+    if (!chunk) {
+        return NULL;
+    }
+    return &chunk->light[((y & 15) * CHUNK_SIZE + (z & 15)) * CHUNK_SIZE + (x & 15)];
+}
+
+uint8_t world_light_at(const World *world, int x, int y, int z) {
+    if (y < 0 || y >= UNDERWORLD_TOP) {
+        return 0;
+    }
+    const Chunk *chunk = chunk_find(world, x >> 4, y >> 4, z >> 4);
+    if (!chunk) {
+        return 0xF0u;
+    }
+    return chunk->light[((y & 15) * CHUNK_SIZE + (z & 15)) * CHUNK_SIZE + (x & 15)];
+}
+
+typedef struct LightNode {
+    int x, y, z, level;
+} LightNode;
+
+static LightNode *g_light_queue;
+static size_t g_light_capacity;
+
+static bool light_push(LightNode node, size_t *count) {
+    if (*count == g_light_capacity) {
+        size_t next = g_light_capacity ? g_light_capacity * 2 : 8192;
+        LightNode *grown = (LightNode *)realloc(g_light_queue, next * sizeof(LightNode));
+        if (!grown) {
+            return false;
+        }
+        g_light_queue = grown;
+        g_light_capacity = next;
+    }
+    g_light_queue[(*count)++] = node;
+    return true;
+}
+
+void world_relight(World *world, int x0, int z0, int x1, int z1) {
+    /* Work in whole chunks so no stale cell is left half-updated. */
+    x0 &= ~(CHUNK_SIZE - 1);
+    z0 &= ~(CHUNK_SIZE - 1);
+    x1 |= CHUNK_SIZE - 1;
+    z1 |= CHUNK_SIZE - 1;
+    if (x1 < x0 || z1 < z0) {
+        return;
+    }
+
+    for (int x = x0; x <= x1; ++x) {
+        for (int z = z0; z <= z1; ++z) {
+            int sky = 15;
+            for (int y = UNDERWORLD_TOP - 1; y >= 0; --y) {
+                const BlockId block = world_get_block(world, x, y, z);
+                if (light_opaque(block)) {
+                    sky = 0;
+                }
+                uint8_t *cell = light_cell(world, x, y, z);
+                if (cell) {
+                    *cell = (uint8_t)(sky << 4);
+                }
+            }
+        }
+    }
+
+    size_t queue_count = 0;
+    for (int x = x0; x <= x1; ++x) {
+        for (int z = z0; z <= z1; ++z) {
+            for (int y = 0; y < UNDERWORLD_TOP; ++y) {
+                const int emit = block_light_emit(world_get_block(world, x, y, z));
+                if (emit <= 0) {
+                    continue;
+                }
+                uint8_t *cell = light_cell(world, x, y, z);
+                if (!cell) {
+                    continue;
+                }
+                const int previous = *cell & 15;
+                if (previous >= emit) {
+                    continue;
+                }
+                *cell = (uint8_t)((*cell & 0xF0u) | (uint8_t)emit);
+                LightNode node = { x, y, z, emit };
+                if (!light_push(node, &queue_count)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    static const int kOffsets[6][3] = {
+        { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
+        { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 }
+    };
+    for (size_t head = 0; head < queue_count; ++head) {
+        const LightNode node = g_light_queue[head];
+        if (node.level <= 1) {
+            continue;
+        }
+        for (int i = 0; i < 6; ++i) {
+            const int nx = node.x + kOffsets[i][0];
+            const int ny = node.y + kOffsets[i][1];
+            const int nz = node.z + kOffsets[i][2];
+            if (light_opaque(world_get_block(world, nx, ny, nz))) {
+                continue;
+            }
+            uint8_t *cell = light_cell(world, nx, ny, nz);
+            if (!cell) {
+                continue;
+            }
+            const int next = node.level - 1;
+            if ((*cell & 15) >= next) {
+                continue;
+            }
+            *cell = (uint8_t)((*cell & 0xF0u) | (uint8_t)next);
+            LightNode child = { nx, ny, nz, next };
+            if (!light_push(child, &queue_count)) {
+                return;
+            }
+        }
+    }
+}
+
+void world_relight_all(World *world) {
+    if (world->count == 0) {
+        return;
+    }
+    int min_cx = 0x7FFFFFF, max_cx = -0x7FFFFFF;
+    int min_cz = 0x7FFFFFF, max_cz = -0x7FFFFFF;
+    for (size_t i = 0; i < world->capacity; ++i) {
+        if (!world->slots[i].used) {
+            continue;
+        }
+        const Chunk *chunk = &world->slots[i].chunk;
+        if (chunk->cx < min_cx) min_cx = chunk->cx;
+        if (chunk->cx > max_cx) max_cx = chunk->cx;
+        if (chunk->cz < min_cz) min_cz = chunk->cz;
+        if (chunk->cz > max_cz) max_cz = chunk->cz;
+    }
+    world_relight(world, min_cx * CHUNK_SIZE, min_cz * CHUNK_SIZE,
+                  (max_cx + 1) * CHUNK_SIZE - 1, (max_cz + 1) * CHUNK_SIZE - 1);
+}
+
+/* --------------------------------------------------------------- chests */
+
+BgContainer *world_container_at(World *world, int x, int y, int z, bool create) {
+    for (size_t i = 0; i < world->container_count; ++i) {
+        BgContainer *container = &world->containers[i];
+        if (container->x == x && container->y == y && container->z == z) {
+            return container;
+        }
+    }
+    if (!create) {
+        return NULL;
+    }
+    if (world->container_count == world->container_capacity) {
+        size_t next = world->container_capacity ? world->container_capacity * 2 : 8;
+        BgContainer *grown =
+            (BgContainer *)realloc(world->containers, next * sizeof(BgContainer));
+        if (!grown) {
+            return NULL;
+        }
+        world->containers = grown;
+        world->container_capacity = next;
+    }
+    BgContainer *container = &world->containers[world->container_count++];
+    memset(container, 0, sizeof(*container));
+    container->x = x;
+    container->y = y;
+    container->z = z;
+    return container;
+}
+
+void world_container_remove(World *world, int x, int y, int z) {
+    for (size_t i = 0; i < world->container_count; ++i) {
+        if (world->containers[i].x != x || world->containers[i].y != y ||
+            world->containers[i].z != z) {
+            continue;
+        }
+        world->containers[i] = world->containers[world->container_count - 1];
+        world->container_count--;
+        return;
+    }
 }
 
 Chunk *world_iter_next(WorldIter *iter) {
@@ -426,6 +649,8 @@ static void decorate_upperworld(World *world, int x0, int z0, int x1, int z1) {
 void world_generate_around(World *world, int center_cx, int center_cz, int radius) {
     const int top = (world->dimension == BG_UPPERWORLD) ? UPPERWORLD_TOP : UNDERWORLD_TOP;
     const int chunk_rows = top / CHUNK_SIZE;
+    const bool was_deferring = world->defer_light;
+    world->defer_light = true;
 
     for (int cx = center_cx - radius; cx <= center_cx + radius; ++cx) {
         for (int cz = center_cz - radius; cz <= center_cz + radius; ++cz) {
@@ -449,6 +674,13 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
                             (center_cz - radius) * CHUNK_SIZE,
                             (center_cx + radius + 1) * CHUNK_SIZE - 1,
                             (center_cz + radius + 1) * CHUNK_SIZE - 1);
+    }
+
+    world->defer_light = was_deferring;
+    if (!world->defer_light) {
+        world_relight(world, center_cx * CHUNK_SIZE, center_cz * CHUNK_SIZE,
+                      (center_cx + 1) * CHUNK_SIZE - 1,
+                      (center_cz + 1) * CHUNK_SIZE - 1);
     }
 }
 
@@ -578,6 +810,8 @@ RiftFire rift_ignite(World *world, int x, int y, int z, int *cx, int *cy, int *c
 }
 
 void rift_build(World *world, int cx, int cy, int cz, int axis) {
+    const bool was_deferring = world->defer_light;
+    world->defer_light = true;
     /* Clear a shell around the gate first, since the twin side of a rift can
      * sit inside solid rock. Bedrock is left alone. */
     for (int dy = -1; dy <= 5; ++dy) {
@@ -613,6 +847,11 @@ void rift_build(World *world, int cx, int cy, int cz, int axis) {
             }
         }
     }
+
+    world->defer_light = was_deferring;
+    if (!world->defer_light) {
+        world_relight(world, cx - 16, cz - 16, cx + 16, cz + 16);
+    }
 }
 
 /* ------------------------------------------------------------- atlas ids */
@@ -624,7 +863,9 @@ enum {
     TILE_ASHSOIL, TILE_LUMENSTONE, TILE_MAGMA, TILE_VOIDSTONE, TILE_CINDERBRICK,
     TILE_PALE_QUARTZ, TILE_CRIMSON_SIDE, TILE_CRIMSON_TOP, TILE_BLOODLEAVES,
     TILE_EMBERLODE, TILE_IRONLODE, TILE_PORTAL, TILE_GLOWMOSS, TILE_CINDERSTONE,
-    TILE_ASHBLOCK
+    TILE_ASHBLOCK,
+    /* Item sprites live at 32..38, so the new blocks sit after them. */
+    TILE_TORCH = 40, TILE_CHEST_SIDE, TILE_CHEST_TOP
 };
 
 int block_tile(BlockId block, int face) {
@@ -659,6 +900,8 @@ int block_tile(BlockId block, int face) {
         case BG_GLOWMOSS:       return TILE_GLOWMOSS;
         case BG_CINDERSTONE:    return TILE_CINDERSTONE;
         case BG_ASHBLOCK:       return TILE_ASHBLOCK;
+        case BG_TORCH:          return TILE_TORCH;
+        case BG_CHEST:          return top ? TILE_CHEST_TOP : TILE_CHEST_SIDE;
         default:                return TILE_STONE;
     }
 }
