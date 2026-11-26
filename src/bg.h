@@ -101,6 +101,13 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
 int world_surface_y(const World *world, int x, int z);
 size_t world_chunk_count(const World *world);
 
+/* Open, dry ground near the origin, where a fresh Upperworld begins. */
+void world_spawn_site(const World *world, int *spawn_x, int *spawn_z);
+
+/* Seed-derived shrine site, well away from the spawn so the rift has to be
+ * found by exploring instead of standing on the doorstep. */
+void world_gate_site(const World *world, int *gate_x, int *gate_z);
+
 /* Iteration order is unspecified; entries stay valid until the world mutates. */
 typedef struct WorldIter {
     World *world;

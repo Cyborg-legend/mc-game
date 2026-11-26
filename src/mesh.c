@@ -30,6 +30,39 @@ static bool solid_at(const World *world, int x, int y, int z) {
     return block_collidable(world_get_block(world, x, y, z));
 }
 
+/* Isotropic tiles survive any quarter turn, so a field of stone or dirt can be
+ * spun per block instead of repeating one stamp over and over. */
+static bool tile_rotates(BlockId block) {
+    switch (block) {
+        case BG_STONE:
+        case BG_DIRT:
+        case BG_SAND:
+        case BG_LEAVES:
+        case BG_BEDROCK:
+        case BG_EMBERSTONE:
+        case BG_ASHSOIL:
+        case BG_EMBERLODE:
+        case BG_IRONLODE:
+        case BG_PALE_QUARTZ:
+        case BG_GLOWMOSS:
+        case BG_CINDERSTONE:
+        case BG_ASHBLOCK:
+        case BG_BLOODLEAVES:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static uint32_t face_spin(int x, int y, int z, int face) {
+    uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^
+                 (uint32_t)z * 83492791u ^ (uint32_t)face * 2654435761u;
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    return h & 3u;
+}
+
 static bool reserve_vertices(BgMesh *mesh, size_t *capacity, size_t needed) {
     if (*capacity >= needed) {
         return true;
@@ -125,6 +158,9 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                     const int tile = block_tile(block, face);
                     const float tu = (float)(tile % 16) * tile_size;
                     const float tv = (float)(tile / 16) * tile_size;
+                    const uint32_t spin = tile_rotates(block)
+                                              ? face_spin(world_x, world_y, world_z, face)
+                                              : 0u;
 
                     const int axis_u = kFaceTangentU[face];
                     const int axis_v = kFaceTangentV[face];
@@ -166,8 +202,22 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
                         vertex->normal[0] = kFaceNormals[face][0];
                         vertex->normal[1] = kFaceNormals[face][1];
                         vertex->normal[2] = kFaceNormals[face][2];
-                        vertex->uv[0] = tu + pad + corner_u[c] * span;
-                        vertex->uv[1] = tv + pad + corner_v[c] * span;
+                        float u = corner_u[c];
+                        float v = corner_v[c];
+                        if (spin == 1u) {
+                            const float swap = u;
+                            u = v;
+                            v = 1.0f - swap;
+                        } else if (spin == 2u) {
+                            u = 1.0f - u;
+                            v = 1.0f - v;
+                        } else if (spin == 3u) {
+                            const float swap = u;
+                            u = 1.0f - v;
+                            v = swap;
+                        }
+                        vertex->uv[0] = tu + pad + u * span;
+                        vertex->uv[1] = tv + pad + v * span;
                         vertex->ao = ao[c];
                     }
 

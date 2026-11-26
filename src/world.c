@@ -465,6 +465,46 @@ int world_surface_y(const World *world, int x, int z) {
     return 2;
 }
 
+/* ----------------------------------------------------------- world sites */
+
+/* Walks outward from an angle until the terrain there stands clear of the sea,
+ * so neither the first spawn nor the shrine is ever carved under water. */
+static bool find_dry_site(const World *world, float angle, int start_distance, int step,
+                          int *out_x, int *out_z) {
+    int distance = start_distance;
+    for (int attempt = 0; attempt < 48; ++attempt) {
+        const int x = (int)lroundf(cosf(angle) * (float)distance);
+        const int z = (int)lroundf(sinf(angle) * (float)distance);
+        const int height = upperworld_height(x, z, world->seed);
+        if (height > SEA_LEVEL + 2 && height < UPPERWORLD_TOP - 10) {
+            *out_x = x;
+            *out_z = z;
+            return true;
+        }
+        angle += 0.61803398875f * 6.28318530718f;
+        distance += step;
+    }
+    return false;
+}
+
+void world_spawn_site(const World *world, int *spawn_x, int *spawn_z) {
+    *spawn_x = 0;
+    *spawn_z = 0;
+    (void)find_dry_site(world, 0.6f, 0, 6, spawn_x, spawn_z);
+}
+
+void world_gate_site(const World *world, int *gate_x, int *gate_z) {
+    /* 120 to 180 blocks out: far enough to be a landmark rather than a starting
+     * view, close enough to stumble across while exploring. */
+    const uint32_t h = hash_u32((uint32_t)world->seed * 2654435761u + 0x165667b1u);
+    const float angle = ((float)(h & 0xFFFFu) / 65535.0f) * 6.28318530718f;
+    const int distance = 120 + (int)((h >> 16) % 61u);
+    if (!find_dry_site(world, angle, distance, 9, gate_x, gate_z)) {
+        *gate_x = 128;
+        *gate_z = 0;
+    }
+}
+
 /* ------------------------------------------------------------ rift gate */
 
 int find_rift_gate_y(const World *world, int gate_x, int gate_z) {

@@ -11,9 +11,8 @@
 #define SAVE_PATH "blockforge.sav"
 #define RENDER_RADIUS 5
 #define MAX_TRACKED_COLUMNS 2048
-#define GATE_X 0
-#define GATE_Z 0
 #define EYE_HEIGHT 1.62f
+#define GATE_SIGHT 88.0f
 #define MOUSE_SENSITIVITY 0.0022f
 #define FIELD_OF_VIEW 1.2217305f
 
@@ -39,6 +38,8 @@ typedef struct App {
     uint64_t tracked[MAX_TRACKED_COLUMNS];
     size_t tracked_count;
     int last_cx, last_cz;
+    int gate_x, gate_z;
+    bool gate_built;
     bool has_save;
     bool travel_armed;
     BgMobWorld mobs;
@@ -51,6 +52,8 @@ typedef struct App {
 } App;
 
 static App g_app;
+
+static void stream_around_player(App *app);
 
 /* ------------------------------------------------------------- callbacks */
 
@@ -151,25 +154,53 @@ static void set_toast(App *app, const char *text) {
     app->toast_timer = 2.6f;
 }
 
-static void respawn(App *app) {
-    app->player.health = 20;
-    app->player.invuln = 1.5f;
-    app->player.vx = app->player.vy = app->player.vz = 0.0f;
-    app->player.x = (float)GATE_X + 0.5f;
-    app->player.z = (float)GATE_Z - 6.0f;
-    const int surface = world_surface_y(&app->world, GATE_X, GATE_Z - 6);
-    app->player.y = surface > 2 ? (float)surface : 40.0f;
-    app->player.yaw = 1.5707963f;
-    app->player.pitch = 0.0f;
-    mobs_clear(&app->mobs);
-    set_toast(app, "The rift pulls you back.");
-}
-
 static void reset_streaming(App *app) {
     app->tracked_count = 0;
     renderer_clear_chunks(&app->renderer);
     app->last_cx = 0x7FFFFFF;
     app->last_cz = 0x7FFFFFF;
+}
+
+static void place_at_gate(App *app, int feet_y) {
+    app->player.vx = app->player.vy = app->player.vz = 0.0f;
+    app->player.x = (float)app->gate_x + 0.5f;
+    app->player.z = (float)app->gate_z - 6.0f;
+    app->player.y = feet_y > 2 ? (float)feet_y : 40.0f;
+    app->player.yaw = 1.5707963f;
+    app->player.pitch = 0.0f;
+}
+
+static void respawn(App *app) {
+    app->player.health = 20;
+    app->player.invuln = 1.5f;
+    if (app->world.dimension == BG_UNDERWORLD) {
+        int gate_y = find_rift_gate_y(&app->world, app->gate_x, app->gate_z);
+        if (gate_y < 2) {
+            gate_y = world_surface_y(&app->world, app->gate_x, app->gate_z - 6);
+        }
+        place_at_gate(app, gate_y);
+        set_toast(app, "The rift pulls you back.");
+    } else {
+        int spawn_x = 0;
+        int spawn_z = 0;
+        world_spawn_site(&app->world, &spawn_x, &spawn_z);
+        if (!world_chunk(&app->world, spawn_x / CHUNK_SIZE, 0, spawn_z / CHUNK_SIZE, false)) {
+            world_generate_around(&app->world, spawn_x / CHUNK_SIZE, spawn_z / CHUNK_SIZE, 0);
+        }
+        app->player.vx = app->player.vy = app->player.vz = 0.0f;
+        app->player.x = (float)spawn_x + 0.5f;
+        app->player.z = (float)spawn_z + 0.5f;
+        app->player.y = (float)world_surface_y(&app->world, spawn_x, spawn_z);
+        if (app->player.y < 2.0f) {
+            app->player.y = 40.0f;
+        }
+        app->player.yaw = 1.5707963f;
+        app->player.pitch = 0.0f;
+        set_toast(app, "You wake at the spawn.");
+    }
+    mobs_clear(&app->mobs);
+    reset_streaming(app);
+    stream_around_player(app);
 }
 
 static void set_cursor_captured(GLFWwindow *window, bool captured) {
@@ -256,24 +287,42 @@ static void remesh_near(App *app, int x, int y, int z) {
     }
 }
 
+static void resolve_gate(App *app) {
+    world_gate_site(&app->world, &app->gate_x, &app->gate_z);
+    app->gate_built = false;
+}
+
 static void spawn_in_world(App *app, Dimension dimension, GLFWwindow *window) {
     world_clear(&app->world);
     world_set_dimension(&app->world, dimension);
     renderer_set_environment(&app->renderer, dimension);
+    resolve_gate(app);
+    player_init(&app->player);
     reset_streaming(app);
 
-    world_generate_around(&app->world, GATE_X / CHUNK_SIZE, GATE_Z / CHUNK_SIZE,
-                          RENDER_RADIUS + 1);
-    build_rift_gate(&app->world, GATE_X, GATE_Z);
-
-    player_init(&app->player);
-    app->player.x = (float)GATE_X + 0.5f;
-    app->player.z = (float)GATE_Z - 6.0f;
-    app->player.y = (float)world_surface_y(&app->world, (int)app->player.x, (int)app->player.z);
-    if (app->player.y < 2.0f) {
-        app->player.y = 40.0f;
+    if (dimension == BG_UNDERWORLD) {
+        /* The Underworld is the rift realm, so its twin shrine is the landing
+         * site. An Upperworld begins as untouched wilderness instead. */
+        world_generate_around(&app->world, app->gate_x / CHUNK_SIZE,
+                              app->gate_z / CHUNK_SIZE, RENDER_RADIUS + 1);
+        const int gate_y = build_rift_gate(&app->world, app->gate_x, app->gate_z);
+        app->gate_built = true;
+        place_at_gate(app, gate_y);
+    } else {
+        int spawn_x = 0;
+        int spawn_z = 0;
+        world_spawn_site(&app->world, &spawn_x, &spawn_z);
+        world_generate_around(&app->world, spawn_x / CHUNK_SIZE, spawn_z / CHUNK_SIZE,
+                              RENDER_RADIUS + 1);
+        app->player.x = (float)spawn_x + 0.5f;
+        app->player.z = (float)spawn_z + 0.5f;
+        app->player.y = (float)world_surface_y(&app->world, spawn_x, spawn_z);
+        if (app->player.y < 2.0f) {
+            app->player.y = 40.0f;
+        }
+        app->player.yaw = 1.5707963f;
+        app->player.pitch = 0.0f;
     }
-    app->player.yaw = 1.5707963f;
     app->travel_armed = false;
     mobs_clear(&app->mobs);
 
@@ -293,6 +342,7 @@ static bool load_game(App *app, GLFWwindow *window) {
         return false;
     }
     renderer_set_environment(&app->renderer, app->world.dimension);
+    resolve_gate(app);
     reset_streaming(app);
     stream_around_player(app);
     app->travel_armed = false;
@@ -302,6 +352,41 @@ static bool load_game(App *app, GLFWwindow *window) {
     return true;
 }
 
+/* Fills in only the columns the shrine court covers that are still missing, so
+ * an existing landscape (and anything built on it) is never regenerated. */
+static void ensure_gate_area(App *app) {
+    for (int cz = (app->gate_z - 9) >> 4; cz <= (app->gate_z + 9) >> 4; ++cz) {
+        for (int cx = (app->gate_x - 9) >> 4; cx <= (app->gate_x + 9) >> 4; ++cx) {
+            if (!world_chunk(&app->world, cx, 0, cz, false)) {
+                world_generate_around(&app->world, cx, cz, 0);
+            }
+        }
+    }
+}
+
+/* The shrine is carved only once the player comes near, so an untouched world
+ * stays wilderness until the rift is actually found. */
+static void maybe_build_gate(App *app) {
+    if (app->gate_built || app->world.dimension != BG_UPPERWORLD) {
+        return;
+    }
+    const float dx = app->player.x - ((float)app->gate_x + 0.5f);
+    const float dz = app->player.z - ((float)app->gate_z + 0.5f);
+    if (dx * dx + dz * dz > GATE_SIGHT * GATE_SIGHT) {
+        return;
+    }
+    app->gate_built = true;
+    ensure_gate_area(app);
+    build_rift_gate(&app->world, app->gate_x, app->gate_z);
+    for (int cz = (app->gate_z - 9) >> 4; cz <= (app->gate_z + 9) >> 4; ++cz) {
+        for (int cx = (app->gate_x - 9) >> 4; cx <= (app->gate_x + 9) >> 4; ++cx) {
+            if (column_tracked(app, column_key(cx, cz))) {
+                mesh_column(app, cx, cz);
+            }
+        }
+    }
+}
+
 static void travel(App *app) {
     const Dimension next = app->world.dimension == BG_UPPERWORLD ? BG_UNDERWORLD : BG_UPPERWORLD;
     world_clear(&app->world);
@@ -309,19 +394,15 @@ static void travel(App *app) {
     renderer_set_environment(&app->renderer, next);
     reset_streaming(app);
 
-    world_generate_around(&app->world, GATE_X / CHUNK_SIZE, GATE_Z / CHUNK_SIZE,
-                          RENDER_RADIUS + 1);
-    int gate_y = build_rift_gate(&app->world, GATE_X, GATE_Z);
+    world_generate_around(&app->world, app->gate_x / CHUNK_SIZE,
+                          app->gate_z / CHUNK_SIZE, RENDER_RADIUS + 1);
+    int gate_y = build_rift_gate(&app->world, app->gate_x, app->gate_z);
+    app->gate_built = true;
     if (gate_y < 2) {
-        gate_y = world_surface_y(&app->world, GATE_X, GATE_Z);
+        gate_y = world_surface_y(&app->world, app->gate_x, app->gate_z);
     }
 
-    app->player.vx = app->player.vy = app->player.vz = 0.0f;
-    app->player.x = (float)GATE_X + 0.5f;
-    app->player.z = (float)GATE_Z - 6.0f;
-    app->player.y = (float)gate_y;
-    app->player.yaw = 1.5707963f;
-    app->player.pitch = 0.0f;
+    place_at_gate(app, gate_y);
     app->travel_armed = false;
     mobs_clear(&app->mobs);
 
@@ -787,6 +868,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
     mobs_update(&app->mobs, &app->world, &app->player, dt);
 
     stream_around_player(app);
+    maybe_build_gate(app);
 
     const BlockId at_feet = world_get_block(&app->world, (int)floorf(app->player.x),
                                             (int)floorf(app->player.y + 0.5f),

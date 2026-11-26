@@ -168,7 +168,8 @@ static void camera_projection_matrix(const BgCamera *camera, float m[16]) {
 typedef enum {
     PAT_UNUSED = -1,
     PAT_FLAT = 0,
-    PAT_SPECKLE,
+    PAT_COBBLE,
+    PAT_DIRT,
     PAT_GRASS_TOP,
     PAT_GRASS_SIDE,
     PAT_BARK,
@@ -183,8 +184,20 @@ typedef enum {
     PAT_GLOW,
     PAT_SWIRL,
     PAT_CRYSTAL,
-    PAT_ASH
+    PAT_ASH,
+    PAT_MOSS,
+    PAT_SPECKLE
 } Pattern;
+
+/* Tiles are painted at 32x32 so cobbles, mortar, grain and ore veins have room
+ * to read. The grid stays 16x16 like the mesh UVs expect, so every tile is one
+ * square of a power-of-two atlas and mip level 4 keeps tiles from bleeding. */
+#define ATLAS_TILE 32
+#define ATLAS_COLS 16
+#define ATLAS_ROWS 16
+#define ATLAS_WIDTH (ATLAS_COLS * ATLAS_TILE)
+#define ATLAS_HEIGHT (ATLAS_ROWS * ATLAS_TILE)
+#define ATLAS_MAX_LEVEL 4
 
 typedef struct {
     unsigned char r, g, b;
@@ -194,37 +207,37 @@ typedef struct {
 
 static const TileDef kTiles[32] = {
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },      /* void */
-    { 128, 128, 132,  90,  90,  94, PAT_SPECKLE },     /* stone */
-    { 122,  88,  60,  96,  68,  45, PAT_SPECKLE },     /* dirt */
-    {  96, 158,  62,  74, 124,  48, PAT_GRASS_TOP },   /* grass top */
-    { 122,  88,  60,  96, 158,  62, PAT_GRASS_SIDE },  /* grass side */
-    {  96,  74,  48,  70,  54,  35, PAT_BARK },        /* bark */
-    { 150, 118,  78, 120,  92,  60, PAT_RINGS },       /* wood rings */
-    {  58, 118,  48,  40,  86,  34, PAT_FOLIAGE },     /* leaves */
-    { 222, 210, 164, 200, 188, 145, PAT_SPECKLE },     /* sand */
-    {  54,  98, 190,  90, 140, 220, PAT_LIQUID },      /* water */
-    {  52,  52,  56,  30,  30,  34, PAT_CHUNKY },      /* bedrock */
-    { 166, 132,  84, 132, 102,  62, PAT_PLANKS },      /* planks */
-    { 140, 110,  72, 110,  84,  54, PAT_BARK },        /* sticks */
-    { 150, 112,  64, 110,  80,  45, PAT_GRID },        /* craft top */
-    { 136, 100,  58, 104,  74,  42, PAT_PLANKS },      /* craft side */
-    { 158,  72,  58, 190, 180, 170, PAT_BRICK },       /* brick */
-    { 110,  44,  40,  78,  28,  26, PAT_SPECKLE },     /* emberstone */
-    {  74,  62,  66,  54,  44,  48, PAT_ASH },         /* ashsoil */
-    { 232, 206, 110, 255, 240, 180, PAT_GLOW },        /* lumenstone */
-    { 196,  82,  28, 255, 150,  40, PAT_LIQUID },      /* magma */
-    {  46,  34,  58,  90,  66, 120, PAT_CRYSTAL },     /* voidstone */
-    {  92,  60,  54, 140, 120, 110, PAT_BRICK },       /* cinderbrick */
-    { 226, 224, 214, 200, 198, 190, PAT_SPECKLE },     /* pale quartz */
-    { 104,  44,  44,  78,  32,  32, PAT_BARK },        /* crimson bark */
-    { 150,  74,  66, 120,  55,  50, PAT_RINGS },       /* crimson rings */
-    { 126,  44,  44,  92,  30,  30, PAT_FOLIAGE },     /* bloodleaves */
-    { 128, 128, 132, 230, 140,  50, PAT_ORE },         /* emberlode */
-    { 128, 128, 132, 210, 190, 160, PAT_ORE },         /* ironlode */
-    {  86,  44, 140, 200, 120, 255, PAT_SWIRL },       /* rift portal */
-    {  70, 150, 120, 170, 255, 210, PAT_GLOW },        /* glowmoss */
-    {  74,  70,  72, 100,  96,  96, PAT_CHUNKY },      /* cinderstone */
-    { 176, 170, 160, 150, 144, 136, PAT_ASH }          /* ashblock */
+    { 126, 126, 131,  86,  86,  92, PAT_COBBLE },      /* stone */
+    { 120,  86,  58,  86,  60,  40, PAT_DIRT },        /* dirt */
+    {  92, 156,  60,  58, 108,  38, PAT_GRASS_TOP },   /* grass top */
+    { 120,  86,  58,  98, 162,  62, PAT_GRASS_SIDE },  /* grass side */
+    { 104,  80,  52,  64,  46,  28, PAT_BARK },        /* bark */
+    { 152, 120,  80, 112,  84,  52, PAT_RINGS },       /* wood rings */
+    {  56, 116,  46,  34,  76,  28, PAT_FOLIAGE },     /* leaves */
+    { 226, 214, 168, 200, 186, 140, PAT_SPECKLE },     /* sand */
+    {  54, 100, 190, 120, 172, 232, PAT_LIQUID },      /* water */
+    {  56,  56,  60,  26,  26,  30, PAT_CHUNKY },      /* bedrock */
+    { 168, 134,  86, 118,  90,  54, PAT_PLANKS },      /* planks */
+    { 142, 112,  74, 102,  76,  48, PAT_BARK },        /* sticks */
+    { 154, 116,  66, 104,  74,  42, PAT_GRID },        /* craft top */
+    { 138, 102,  60,  98,  70,  40, PAT_PLANKS },      /* craft side */
+    { 158,  74,  58, 200, 190, 178, PAT_BRICK },       /* brick */
+    { 116,  44,  40,  72,  24,  22, PAT_COBBLE },      /* emberstone */
+    {  78,  64,  68,  54,  44,  48, PAT_ASH },         /* ashsoil */
+    { 232, 206, 110, 255, 246, 190, PAT_GLOW },        /* lumenstone */
+    { 192,  80,  26, 255, 158,  48, PAT_LIQUID },      /* magma */
+    {  48,  36,  62, 126,  90, 172, PAT_CRYSTAL },     /* voidstone */
+    {  92,  60,  54, 152, 132, 122, PAT_BRICK },       /* cinderbrick */
+    { 228, 226, 216, 198, 196, 188, PAT_SPECKLE },     /* pale quartz */
+    { 104,  44,  44,  64,  24,  24, PAT_BARK },        /* crimson bark */
+    { 152,  74,  66, 106,  44,  40, PAT_RINGS },       /* crimson rings */
+    { 128,  44,  44,  76,  22,  22, PAT_FOLIAGE },     /* bloodleaves */
+    { 128, 128, 132, 240, 146,  52, PAT_ORE },         /* emberlode */
+    { 128, 128, 132, 214, 196, 168, PAT_ORE },         /* ironlode */
+    {  84,  42, 150, 214, 140, 255, PAT_SWIRL },       /* rift portal */
+    {  68, 148, 120, 176, 255, 214, PAT_MOSS },        /* glowmoss */
+    {  76,  72,  74, 106, 102, 102, PAT_CHUNKY },      /* cinderstone */
+    { 178, 172, 162, 146, 140, 132, PAT_ASH }          /* ashblock */
 };
 
 static uint32_t pixel_hash(int tile, int px, int py) {
@@ -240,129 +253,236 @@ static float pixel_noise(int tile, int px, int py) {
     return (float)(pixel_hash(tile, px, py) & 0xFFFFu) / 65535.0f;
 }
 
+static float cell_noise(int tile, int cx, int cy, int salt) {
+    uint32_t h = (uint32_t)tile * 374761393u + (uint32_t)cx * 668265263u +
+                 (uint32_t)cy * 2246822519u + (uint32_t)salt * 2654435761u;
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return (float)(h & 0xFFFFu) / 65535.0f;
+}
+
+static float clamp01(float value) {
+    if (value < 0.0f) return 0.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
+}
+
 static unsigned char clamp255(float value) {
     if (value < 0.0f) return 0;
     if (value > 255.0f) return 255;
     return (unsigned char)value;
 }
 
+static void cobble_shade(int tile, int px, int py, float n, float *shade, float *mix) {
+    const int row = py / 8;
+    const int gx = (px + ((row & 1) ? 4 : 0)) & (ATLAS_TILE - 1);
+    const int lx = gx & 7;
+    const int ly = py & 7;
+    const float cell = cell_noise(tile, gx >> 3, row, 3);
+    const float edge = fminf(fminf((float)lx, 7.0f - (float)lx),
+                             fminf((float)ly, 7.0f - (float)ly));
+    *shade = 0.84f + cell * 0.30f + (n - 0.5f) * 0.10f;
+    *mix = 0.0f;
+    if (edge < 1.0f) {
+        *mix = 1.0f;
+    } else if (edge < 1.9f) {
+        *shade *= 0.90f;
+    }
+    if (n > 0.94f) *shade *= 1.10f;
+}
+
 static void paint_pixel(const TileDef *def, int tile, int px, int py, unsigned char out[3]) {
     const float base[3] = { (float)def->r, (float)def->g, (float)def->b };
     const float accent[3] = { (float)def->ar, (float)def->ag, (float)def->ab };
     const float n = pixel_noise(tile, px, py);
-    const float cx = (float)px - 7.5f;
-    const float cy = (float)py - 7.5f;
-    const float radius = sqrtf(cx * cx + cy * cy);
+    const float dx = (float)px - 15.5f;
+    const float dy = (float)py - 15.5f;
+    const float radius = sqrtf(dx * dx + dy * dy);
 
     float shade = 1.0f;
     float accent_mix = 0.0f;
 
     switch (def->pattern) {
         case PAT_FLAT:
-            shade = 0.94f + n * 0.10f;
+            shade = 0.94f + n * 0.08f;
             break;
-        case PAT_SPECKLE:
-            shade = 0.86f + n * 0.24f;
-            if (n > 0.94f) shade *= 0.74f;
-            else if (n < 0.06f) shade *= 1.12f;
-            if (((px * 5 + py * 11 + tile * 3) % 17) == 0) shade *= 0.88f;
+        case PAT_COBBLE:
+            cobble_shade(tile, px, py, n, &shade, &accent_mix);
             break;
-        case PAT_GRASS_TOP:
-            shade = 0.90f + n * 0.18f;
-            if (((px * 3 + py * 5 + tile) % 13) == 0) shade *= 0.80f;
-            if (((px * 7 + py * 2) % 19) == 0) shade *= 1.10f;
+        case PAT_DIRT: {
+            const float clod = cell_noise(tile, px / 4, py / 4, 9);
+            shade = 0.82f + n * 0.26f;
+            if (clod > 0.78f) shade *= 0.84f;
+            else if (clod < 0.18f) shade *= 1.14f;
+            if ((px * 5 + py * 11) % 31 == 0) shade *= 0.68f;
+            if ((px * 7 + py * 3) % 37 == 0) accent_mix = 0.55f;
             break;
-        case PAT_GRASS_SIDE:
-            if (py < 3 + (((px * 3 + 1) % 3 == 0) ? 1 : 0)) {
-                accent_mix = 1.0f;
-                shade = 0.90f + n * 0.16f;
+        }
+        case PAT_GRASS_TOP: {
+            const float clump = cell_noise(tile, px / 5, py / 5, 5);
+            shade = (0.86f + clump * 0.26f) * (0.94f + n * 0.12f);
+            if ((px * 9 + py * 4) % 27 == 0) shade *= 0.74f;
+            if ((px * 4 + py * 11) % 29 == 0) accent_mix = 0.85f;
+            if ((px * 13 + py * 5) % 41 == 0) shade *= 1.16f;
+            break;
+        }
+        case PAT_GRASS_SIDE: {
+            const float fringe_noise = cell_noise(tile, px, 0, 7);
+            const int fringe = 8 + (int)(fringe_noise * 5.0f) + (((px + 1) % 5 == 0) ? 2 : 0);
+            if (py < fringe) {
+                accent_mix = 0.90f;
+                shade = 0.94f + n * 0.16f;
+                if ((px * 7 + py * 5) % 23 == 0) shade *= 0.74f;
+                if ((px * 5 + py * 3) % 31 == 0) shade *= 1.12f;
             } else {
-                shade = 0.84f + n * 0.26f;
+                const float clod = cell_noise(tile, px / 4, py / 4, 9);
+                shade = 0.82f + n * 0.26f;
+                if (clod > 0.76f) shade *= 0.86f;
+                if ((px * 5 + py * 11) % 31 == 0) shade *= 0.70f;
             }
             break;
+        }
         case PAT_BARK:
-            shade = 0.82f + 0.18f * sinf((float)px * 1.7f + (float)tile);
-            if (px % 5 == 0) shade *= 0.70f;
-            if (py % 9 == 0 && px % 3 == 0) shade *= 0.84f;
-            shade += n * 0.06f;
+            shade = 0.88f + 0.16f * sinf((float)px * 0.8f + (float)tile * 0.6f) + n * 0.06f;
+            if (px % 7 == 0) accent_mix = 0.95f;
+            else if (px % 7 == 3) shade *= 0.78f;
+            if ((px + py * 5) % 41 == 0) shade *= 1.14f;
             break;
         case PAT_RINGS:
-            shade = 0.74f + 0.28f * sinf(radius * 2.4f);
-            if (radius < 1.2f) shade = 0.52f;
+            shade = 0.80f + 0.24f * sinf(radius * 1.05f + n * 0.35f);
+            if (radius < 2.6f) accent_mix = 0.95f;
+            if (radius > 15.2f) shade *= 0.84f;
             break;
         case PAT_FOLIAGE: {
-            const float clump = pixel_noise(tile, px / 2, py / 2);
-            shade = 0.68f + clump * 0.48f;
-            if (clump > 0.82f) shade = 0.46f;
-            if (pixel_noise(tile + 91, px, py) > 0.93f) accent_mix = 0.8f;
+            const float clump = cell_noise(tile, px / 3, py / 3, 11);
+            shade = (0.64f + clump * 0.54f) * (0.95f + n * 0.10f);
+            if (clump > 0.84f) accent_mix = 1.0f;
+            if (clump < 0.16f) shade = 1.16f;
             break;
         }
-        case PAT_LIQUID:
-            shade = 0.84f + 0.16f * sinf((float)py * 0.75f + (float)px * 0.35f + n * 1.4f);
-            if (py % 6 == 0) shade *= 1.12f;
+        case PAT_LIQUID: {
+            const float wave = sinf((float)py * 0.62f + sinf((float)px * 0.22f) * 1.7f +
+                                    n * 0.9f);
+            shade = 0.90f + wave * 0.14f;
+            if (wave > 0.84f) {
+                accent_mix = 1.0f;
+                shade = 1.06f;
+            }
             break;
+        }
         case PAT_CHUNKY: {
-            const int bx = px / 4;
-            const int by = py / 4;
-            shade = 0.80f + 0.26f * pixel_noise(tile + bx * 7, by, 0);
-            if (px % 4 == 0 || py % 4 == 0) shade *= 0.82f;
+            const float cell = cell_noise(tile, px / 4, py / 4, 13);
+            shade = 0.78f + cell * 0.32f;
+            if (px % 4 == 0 || py % 4 == 0) accent_mix = 0.85f;
+            if (n > 0.90f) shade *= 0.80f;
             break;
         }
-        case PAT_PLANKS:
-            shade = 0.92f + n * 0.12f;
-            if (py % 5 == 0 || py == 15) shade = 0.60f;
-            if ((px + (py / 5) * 5) % 8 == 0) shade *= 0.76f;
-            if (((px * 3 + py * 7) % 11) == 0) shade *= 0.88f;
+        case PAT_PLANKS: {
+            const int plank = py / 8;
+            const float grain = cell_noise(tile, plank, (px + plank * 7) / 9, 17);
+            shade = (0.88f + (grain - 0.5f) * 0.22f) * (0.96f + n * 0.08f);
+            if (py % 8 == 0) accent_mix = 0.90f;
+            if ((px + plank * 11) % 16 == 0) accent_mix = 0.55f;
+            if (((py * 3 + (int)(2.0f * sinf((float)px * 0.55f + (float)plank))) % 10) == 0)
+                shade *= 0.92f;
+            if ((px == 3 || px == 28) && (py % 8 == 3)) accent_mix = 1.0f;
             break;
+        }
         case PAT_GRID:
-            shade = (px % 6 < 1 || py % 6 < 1) ? 0.55f : (0.90f + n * 0.14f);
+            shade = 0.88f + n * 0.10f;
+            if ((px * 3 + py) % 9 == 0) shade *= 0.94f;
+            if (px < 3 || py < 3 || px > 28 || py > 28) accent_mix = 0.90f;
+            else if ((px - 3) % 9 == 0 || (py - 3) % 9 == 0) accent_mix = 0.70f;
             break;
         case PAT_BRICK: {
-            const int row = py / 5;
-            const int offset = (row % 2) * 4;
-            if (py % 5 == 0 || ((px + offset) % 8) == 0) {
+            const int row = py / 8;
+            const int bx = (px + ((row & 1) ? 8 : 0)) & (ATLAS_TILE - 1);
+            const float brick = cell_noise(tile, bx / 16, row, 19);
+            if (py % 8 == 0 || bx % 16 == 0) {
                 accent_mix = 1.0f;
-                shade = 0.94f;
+                shade = 0.96f;
             } else {
-                shade = 0.86f + n * 0.20f;
+                shade = 0.82f + brick * 0.24f + n * 0.06f;
+                if (n > 0.93f) shade *= 0.86f;
             }
             break;
         }
-        case PAT_ORE:
-            shade = 0.84f + n * 0.22f;
-            if (radius < 4.2f + n * 1.6f) {
+        case PAT_ORE: {
+            float stone_shade = 1.0f;
+            float stone_mix = 0.0f;
+            cobble_shade(tile, px, py, n, &stone_shade, &stone_mix);
+            shade = stone_shade;
+            accent_mix = stone_mix * 0.35f;
+            float ore = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                const int ox = 6 + (int)(cell_noise(tile, k, 0, 23) * 20.0f);
+                const int oy = 6 + (int)(cell_noise(tile, k, 1, 29) * 20.0f);
+                const float ox_d = (float)(px - ox);
+                const float oy_d = (float)(py - oy);
+                if (sqrtf(ox_d * ox_d + oy_d * oy_d) < 3.6f + n * 1.6f) {
+                    ore = 1.0f;
+                }
+            }
+            if (ore > 0.0f) {
                 accent_mix = 1.0f;
-                shade = 0.96f + n * 0.16f;
-                if (radius > 3.3f) shade *= 0.76f;
+                shade = 0.98f + n * 0.16f;
             }
             break;
+        }
         case PAT_GLOW:
-            shade = 1.10f - radius * 0.04f + n * 0.08f;
-            if (radius < 2.2f) accent_mix = 0.8f;
-            if (radius > 6.6f) shade *= 0.84f;
+            shade = 1.12f - radius * 0.028f + n * 0.07f;
+            if (((px * 5 + py * 3) % 13) == 0) shade *= 0.80f;
+            if (radius < 2.6f) accent_mix = 0.90f;
+            if (radius > 13.5f) accent_mix = 0.45f;
             break;
         case PAT_SWIRL: {
-            const float wave = sinf(((float)px + (float)py) * 0.9f + n * 2.2f);
-            accent_mix = (wave > 0.15f) ? 1.0f : 0.0f;
-            shade = 0.92f + n * 0.12f;
+            const float angle = atan2f(dy, dx);
+            const float band = sinf(radius * 1.15f - angle * 2.0f + n * 0.5f);
+            accent_mix = band > 0.0f ? 1.0f : 0.0f;
+            shade = 0.90f + band * 0.12f + n * 0.06f;
+            if (radius < 3.0f) shade = 1.28f;
             break;
         }
         case PAT_CRYSTAL: {
-            const int band = (px + py * 2) % 11;
+            const int band = (px + py * 2) % 13;
+            const float facet = cell_noise(tile, px / 8, py / 8, 31);
             if (band < 3) {
-                accent_mix = 0.55f;
-                shade = 1.22f;
+                accent_mix = 0.60f;
+                shade = 1.18f;
             } else if (band < 6) {
-                shade = 0.74f;
+                shade = 0.70f;
             } else {
-                shade = 0.96f + n * 0.08f;
+                shade = 0.92f + n * 0.10f;
             }
+            if (px % 8 == 0 || py % 8 == 0) shade *= 0.72f;
+            shade *= 0.90f + facet * 0.20f;
             break;
         }
-        case PAT_ASH:
-            shade = 0.88f + n * 0.18f;
-            if (n > 0.94f) shade = 0.60f;
-            if (((px * 5 + py * 3) % 23) == 0) shade *= 1.10f;
+        case PAT_ASH: {
+            const float clump = cell_noise(tile, px / 4, py / 4, 37);
+            shade = 0.86f + n * 0.20f;
+            if (clump > 0.85f) shade *= 0.80f;
+            if (n > 0.96f) accent_mix = 0.70f;
+            if ((px * 7 + py * 5) % 43 == 0) shade *= 1.12f;
+            break;
+        }
+        case PAT_MOSS: {
+            const float clump = cell_noise(tile, px / 4, py / 4, 41);
+            const float fuzz = pixel_noise(tile + 53, px, py);
+            if (clump > 0.42f) {
+                accent_mix = clamp01((clump - 0.42f) * 2.4f);
+                shade = 0.98f + fuzz * 0.20f;
+            } else {
+                shade = 0.66f + fuzz * 0.20f;
+            }
+            if (fuzz > 0.95f) shade *= 1.20f;
+            break;
+        }
+        case PAT_SPECKLE:
+            shade = 0.90f + n * 0.12f;
+            if (((px * 5 + py * 11 + tile * 3) % 19) == 0) shade *= 0.84f;
+            if (((px * 13 + py * 7) % 37) == 0) shade *= 1.10f;
             break;
         case PAT_UNUSED:
         default:
@@ -370,16 +490,21 @@ static void paint_pixel(const TileDef *def, int tile, int px, int py, unsigned c
             break;
     }
 
+    accent_mix = clamp01(accent_mix);
     for (int i = 0; i < 3; ++i) {
-        const float value = base[i] * shade + (accent[i] * shade - base[i] * shade) * accent_mix;
-        out[i] = clamp255(value);
+        const float lit = base[i] * shade;
+        const float alt = accent[i] * shade;
+        out[i] = clamp255(lit + (alt - lit) * accent_mix);
     }
 }
 
-static GLuint build_atlas(void) {
-    static unsigned char pixels[256 * 256 * 4];
+/* Kept after upload so the hotbar can show the real block faces as icons. */
+static unsigned char g_atlas_pixels[ATLAS_WIDTH * ATLAS_HEIGHT * 4];
 
-    for (int i = 0; i < 256 * 256; ++i) {
+static GLuint build_atlas(void) {
+    unsigned char *pixels = g_atlas_pixels;
+
+    for (int i = 0; i < ATLAS_WIDTH * ATLAS_HEIGHT; ++i) {
         pixels[i * 4 + 0] = 0;
         pixels[i * 4 + 1] = 0;
         pixels[i * 4 + 2] = 0;
@@ -391,13 +516,14 @@ static GLuint build_atlas(void) {
         if (def->pattern == PAT_UNUSED) {
             continue;
         }
-        const int origin_x = (tile % 16) * 16;
-        const int origin_y = (tile / 16) * 16;
-        for (int py = 0; py < 16; ++py) {
-            for (int px = 0; px < 16; ++px) {
+        const int origin_x = (tile % ATLAS_COLS) * ATLAS_TILE;
+        const int origin_y = (tile / ATLAS_COLS) * ATLAS_TILE;
+        for (int py = 0; py < ATLAS_TILE; ++py) {
+            for (int px = 0; px < ATLAS_TILE; ++px) {
                 unsigned char rgb[3];
                 paint_pixel(def, tile, px, py, rgb);
-                unsigned char *p = &pixels[((origin_y + py) * 256 + (origin_x + px)) * 4];
+                unsigned char *p =
+                    &pixels[((origin_y + py) * ATLAS_WIDTH + (origin_x + px)) * 4];
                 p[0] = rgb[0];
                 p[1] = rgb[1];
                 p[2] = rgb[2];
@@ -409,9 +535,10 @@ static GLuint build_atlas(void) {
     GLuint texture = 0;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ATLAS_WIDTH, ATLAS_HEIGHT, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, pixels);
     glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 3);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, ATLAS_MAX_LEVEL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1014,6 +1141,45 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
     renderer->draw_calls++;
 }
 
+/* A 4x4 downsample of the block's top face, so the hotbar shows the same
+ * pixels the world does instead of one flat colour. */
+static void draw_item_icon(BgUi *ui, uint16_t item, float x, float y, float size,
+                           float alpha) {
+    float rgb[3] = { 0.30f, 0.30f, 0.32f };
+    item_color(item, rgb);
+    if (item >= BG_BLOCK_COUNT) {
+        const float flat[4] = { rgb[0], rgb[1], rgb[2], alpha };
+        ui_rect(ui, x, y, size, size, flat);
+        return;
+    }
+
+    const int tile = block_tile((BlockId)item, 2);
+    const int origin_x = (tile % ATLAS_COLS) * ATLAS_TILE;
+    const int origin_y = (tile / ATLAS_COLS) * ATLAS_TILE;
+    const int cell = ATLAS_TILE / 4;
+    const float step = size / 4.0f;
+    for (int iy = 0; iy < 4; ++iy) {
+        for (int ix = 0; ix < 4; ++ix) {
+            int sum[3] = { 0, 0, 0 };
+            for (int py = 0; py < cell; ++py) {
+                for (int px = 0; px < cell; ++px) {
+                    const unsigned char *src =
+                        &g_atlas_pixels[((origin_y + iy * cell + py) * ATLAS_WIDTH +
+                                         origin_x + ix * cell + px) * 4];
+                    sum[0] += src[0];
+                    sum[1] += src[1];
+                    sum[2] += src[2];
+                }
+            }
+            const float samples = (float)(cell * cell) * 255.0f;
+            const float color[4] = { (float)sum[0] / samples, (float)sum[1] / samples,
+                                     (float)sum[2] / samples, alpha };
+            ui_rect(ui, x + (float)ix * step, y + (float)iy * step, step + 0.5f,
+                    step + 0.5f, color);
+        }
+    }
+}
+
 void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
     int width = 1280;
     int height = 720;
@@ -1045,23 +1211,12 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
         ui_rect(&ui, x, bar_y, slot, slot, inner);
 
         const BgStack *stack = &player->inventory[i];
-        float rgb[3] = { 0.08f, 0.08f, 0.10f };
         if (stack->count > 0) {
-            item_color(stack->item, rgb);
+            draw_item_icon(&ui, stack->item, x + 5.0f, bar_y + 5.0f, slot - 10.0f, 0.95f);
+        } else {
+            const float empty[4] = { 0.08f, 0.08f, 0.10f, 0.55f };
+            ui_rect(&ui, x + 5.0f, bar_y + 5.0f, slot - 10.0f, slot - 10.0f, empty);
         }
-        const float icon[4] = { rgb[0], rgb[1], rgb[2], stack->count > 0 ? 0.95f : 0.55f };
-        ui_rect(&ui, x + 5.0f, bar_y + 5.0f, slot - 10.0f, slot - 10.0f, icon);
-
-        const float top[4] = {
-            rgb[0] * 1.45f > 1.0f ? 1.0f : rgb[0] * 1.45f,
-            rgb[1] * 1.45f > 1.0f ? 1.0f : rgb[1] * 1.45f,
-            rgb[2] * 1.45f > 1.0f ? 1.0f : rgb[2] * 1.45f,
-            0.9f
-        };
-        ui_rect(&ui, x + 5.0f, bar_y + 5.0f, slot - 10.0f, 5.0f, top);
-
-        const float bottom[4] = { rgb[0] * 0.6f, rgb[1] * 0.6f, rgb[2] * 0.6f, 0.9f };
-        ui_rect(&ui, x + 5.0f, bar_y + slot - 11.0f, slot - 10.0f, 6.0f, bottom);
 
         if (stack->count > 1) {
             char count_text[8];
