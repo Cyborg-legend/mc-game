@@ -31,8 +31,11 @@ jobs:
             $glfwLib = Get-ChildItem -Path $glfwDir.FullName -Recurse -Filter glfw3.lib | Select-Object -First 1
           }
           if (-not $glfwLib) { throw 'glfw3.lib not found in GLFW package' }
-          $inc = (Resolve-Path glfw_deps/include).Path.Replace('\\','/')
-          $lib = $glfwLib.FullName.Replace('\\','/')
+          # CMake chokes on Windows backslash escapes in the generated config,
+          # so normalise every path to forward slashes (regex, not literal).
+          $inc = (Resolve-Path glfw_deps/include).Path -replace '\\','/'
+          $lib = $glfwLib.FullName -replace '\\','/'
+          if ($inc -match '\\' -or $lib -match '\\') { throw 'backslash left in GLFW paths' }
           @"
           set(glfw3_FOUND TRUE)
           set(glfw3_INCLUDE_DIRS "$inc")
@@ -60,8 +63,10 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
+          $root = $PWD.Path -replace '\\','/'
           cmake -B build -S . `
-            -DCMAKE_PREFIX_PATH="$PWD/glfw_deps;$PWD"
+            -Dglfw3_DIR="$root/glfw_deps" `
+            -DCMAKE_PREFIX_PATH="$root/glfw_deps"
 
       - name: Build
         shell: pwsh
