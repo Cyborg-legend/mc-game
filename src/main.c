@@ -41,6 +41,7 @@ typedef struct WorldEntry {
     int id;
     char name[WORLD_NAME_MAX];
     uint64_t seed;
+    Dimension dimension; /* realm the player last stood in */
 } WorldEntry;
 
 typedef struct App {
@@ -72,7 +73,7 @@ typedef struct App {
     int world_count;
     int world_choice;
     int active_world;
-    char save_path[96];
+    int world_delete_confirm; /* row whose DELETE was clicked once */
     float mouse_x, mouse_y;
     int mine_x, mine_y, mine_z;
     float mine_progress;
@@ -271,6 +272,16 @@ static UiRect worlds_row_rect(const App *app, int index) {
     return r;
 }
 
+static UiRect worlds_delete_rect(const App *app, int index) {
+    const UiRect row = worlds_row_rect(app, index);
+    UiRect r;
+    r.w = 64.0f;
+    r.h = 26.0f;
+    r.x = row.x + row.w - r.w - 9.0f;
+    r.y = row.y + (row.h - r.h) * 0.5f;
+    return r;
+}
+
 static UiRect worlds_button_rect(const App *app, int index) {
     const float w = 240.0f;
     const float gap = 24.0f;
@@ -340,6 +351,27 @@ static void ensure_world_dir(void) {
 #endif
 }
 
+/* Each world keeps one save per realm, so anything built on the far side of a
+ * rift is still standing when the player comes back through. */
+static void world_realm_path(int id, Dimension dimension, char *out, size_t size) {
+    if (dimension == BG_UNDERWORLD) {
+        snprintf(out, size, "%s/slot_%d_under.sav", WORLD_DIR, id);
+    } else {
+        world_save_path(id, out, size);
+    }
+}
+
+static bool world_file_exists(int id, Dimension dimension) {
+    char path[96];
+    world_realm_path(id, dimension, path, sizeof(path));
+    FILE *probe = fopen(path, "rb");
+    if (!probe) {
+        return false;
+    }
+    fclose(probe);
+    return true;
+}
+
 static void worlds_write_index(const App *app) {
     FILE *file = fopen(WORLD_INDEX, "wb");
     if (!file) {
@@ -347,8 +379,8 @@ static void worlds_write_index(const App *app) {
     }
     fprintf(file, "BLOCKFORGE-WORLDS 1\n");
     for (int i = 0; i < app->world_count; ++i) {
-        fprintf(file, "%d\t%s\t%llu\n", app->worlds[i].id, app->worlds[i].name,
-                (unsigned long long)app->worlds[i].seed);
+        fprintf(file, "%d\t%s\t%llu\t%d\n", app->worlds[i].id, app->worlds[i].name,
+                (unsigned long long)app->worlds[i].seed, (int)app->worlds[i].dimension);
     }
     fclose(file);
 }
@@ -372,22 +404,20 @@ static void worlds_read_index(App *app) {
         int id = 0;
         char name[WORLD_NAME_MAX] = { 0 };
         unsigned long long seed = 0;
-        if (sscanf(line, "%d\t%23[^\t]\t%llu", &id, name, &seed) < 2) {
+        int dimension = 0;
+        if (sscanf(line, "%d\t%23[^\t]\t%llu\t%d", &id, name, &seed, &dimension) < 2) {
             continue;
         }
-        /* A world whose save went missing is not offered any more. */
-        char path[96];
-        world_save_path(id, path, sizeof(path));
-        FILE *probe = fopen(path, "rb");
-        if (!probe) {
+        /* A world whose saves both went missing is not offered any more. */
+        if (!world_file_exists(id, BG_UPPERWORLD) && !world_file_exists(id, BG_UNDERWORLD)) {
             continue;
         }
-        fclose(probe);
 
         WorldEntry *entry = &app->worlds[app->world_count++];
         entry->id = id;
         snprintf(entry->name, sizeof(entry->name), "%s", name);
         entry->seed = (uint64_t)seed;
+        entry->dimension = dimension == (int)BG_UNDERWORLD ? BG_UNDERWORLD : BG_UPPERWORLD;
     }
     fclose(file);
 }
@@ -448,7 +478,65 @@ static void worlds_import_legacy(App *app) {
     entry->id = 1;
     snprintf(entry->name, sizeof(entry->name), "Old World");
     entry->seed = 0;
+    entry->dimension = BG_UPPERWORLD;
     worlds_write_index(app);
+}
+
+static int active_world_id(const App *app) {
+    if (app->active_world < 0 || app->active_world >= app->world_count) {
+        return -1;
+    }
+    return app->worlds[app->active_world].id;
+}
+
+/* Writes the realm the player is standing in; the other realm keeps whatever
+ * its own file last saw. */
+static void save_active_world(App *app) {
+    if (app->active_world < 0 || app->active_world >= app->world_count) {
+        return;
+    }
+    char path[96];
+    world_realm_path(app->worlds[app->active_world].id, app->world.dimension, path,
+                     sizeof(path));
+    save_world(path, &app->world, &app->player);
+    WorldEntry *entry = &app->worlds[app->active_world];
+    entry->seed = app->world.seed;
+    entry->dimension = app->world.dimension;
+    worlds_write_index(app);
+}
+
+/* Erases a world from the list and deletes both of its realm saves. */
+static void delete_world(App *app, int index) {
+    if (index < 0 || index >= app->world_count) {
+        return;
+    }
+    char name[WORLD_NAME_MAX];
+    snprintf(name, sizeof(name), "%s", app->worlds[index].name);
+
+    char path[96];
+    world_realm_path(app->worlds[index].id, BG_UPPERWORLD, path, sizeof(path));
+    remove(path);
+    world_realm_path(app->worlds[index].id, BG_UNDERWORLD, path, sizeof(path));
+    remove(path);
+
+    for (int i = index; i + 1 < app->world_count; ++i) {
+        app->worlds[i] = app->worlds[i + 1];
+    }
+    app->world_count--;
+    if (app->active_world == index) {
+        app->active_world = -1;
+    } else if (app->active_world > index) {
+        app->active_world--;
+    }
+    if (app->world_choice >= app->world_count) {
+        app->world_choice = app->world_count > 0 ? app->world_count - 1 : 0;
+    }
+    app->world_delete_confirm = -1;
+    worlds_write_index(app);
+
+    char message[96];
+    snprintf(message, sizeof(message), "Erased %s.", name);
+    set_toast(app, message);
 }
 
 /* Fills the create screen with sensible defaults for the next world. */
@@ -668,10 +756,7 @@ static void update_loading(App *app, GLFWwindow *window) {
 
     stream_around_player(app);
     /* A world exists on disk from the moment it is playable. */
-    if (app->save_path[0] != '\0' && app->active_world >= 0) {
-        save_world(app->save_path, &app->world, &app->player);
-        worlds_write_index(app);
-    }
+    save_active_world(app);
     app->state = STATE_PLAYING;
     set_cursor_captured(window, true);
 }
@@ -679,7 +764,7 @@ static void update_loading(App *app, GLFWwindow *window) {
 static void start_new_world(App *app, GLFWwindow *window) {
     (void)window;
     if (app->world_count >= MAX_WORLDS) {
-        set_toast(app, "The world list is full.");
+        set_toast(app, "World list full. Delete one to make room.");
         app->state = STATE_WORLDS;
         return;
     }
@@ -692,10 +777,10 @@ static void start_new_world(App *app, GLFWwindow *window) {
     snprintf(entry->name, sizeof(entry->name), "%s",
              app->name_text[0] != '\0' ? app->name_text : "New World");
     entry->seed = seed;
+    entry->dimension = app->create_dimension;
     app->active_world = app->world_count;
     app->world_count++;
     worlds_write_index(app);
-    world_save_path(entry->id, app->save_path, sizeof(app->save_path));
 
     world_set_seed(&app->world, seed);
     begin_loading(app, app->create_dimension);
@@ -708,14 +793,22 @@ static bool load_game(App *app, GLFWwindow *window) {
 
     const int index = app->world_choice;
     char path[96];
-    world_save_path(app->worlds[index].id, path, sizeof(path));
+    world_realm_path(app->worlds[index].id, app->worlds[index].dimension, path,
+                     sizeof(path));
     if (!load_world(path, &app->world, &app->player)) {
-        return false;
+        /* The other side of the rift may be the only one saved. */
+        const Dimension other = app->worlds[index].dimension == BG_UNDERWORLD
+                                    ? BG_UPPERWORLD
+                                    : BG_UNDERWORLD;
+        world_realm_path(app->worlds[index].id, other, path, sizeof(path));
+        if (!load_world(path, &app->world, &app->player)) {
+            return false;
+        }
     }
 
-    snprintf(app->save_path, sizeof(app->save_path), "%s", path);
     app->active_world = index;
     app->worlds[index].seed = app->world.seed;
+    app->worlds[index].dimension = app->world.dimension;
     worlds_write_index(app);
 
     renderer_set_environment(&app->renderer, app->world.dimension);
@@ -746,30 +839,47 @@ static void travel(App *app) {
         return;
     }
 
-    world_clear(&app->world);
-    world_set_dimension(&app->world, next);
+    /* Both realms keep their own save, so the far side is restored instead of
+     * being generated over: bases, bridges and tunnels are all still there. */
+    const BgPlayer carried = app->player;
+    const uint64_t seed = app->world.seed;
+    save_active_world(app);
+
+    bool restored = false;
+    const int id = active_world_id(app);
+    if (id >= 0) {
+        char path[96];
+        world_realm_path(id, next, path, sizeof(path));
+        restored = load_world(path, &app->world, &app->player) &&
+                   app->world.dimension == next;
+    }
+    if (restored) {
+        /* Terrain comes from the file, but the pack on your back is the one
+         * you just carried through the gate. */
+        app->player = carried;
+    } else {
+        world_clear(&app->world);
+        world_set_dimension(&app->world, next);
+        world_set_seed(&app->world, seed);
+        world_generate_around(&app->world, cx / CHUNK_SIZE, cz / CHUNK_SIZE,
+                              RENDER_RADIUS + 1);
+    }
     renderer_set_environment(&app->renderer, next);
     reset_streaming(app);
 
-    world_generate_around(&app->world, cx / CHUNK_SIZE, cz / CHUNK_SIZE, RENDER_RADIUS + 1);
     rift_build(&app->world, cx, cy, cz, axis);
-
     place_at_rift(app, cx, cy, cz, axis);
     app->travel_armed = false;
     mobs_clear(&app->mobs);
 
     stream_around_player(app);
+    save_active_world(app);
     set_toast(app, next == BG_UNDERWORLD ? "The Underworld swallows you."
                                         : "You step back into the open.");
 }
 
 static void save_and_title(App *app, GLFWwindow *window) {
-    if (app->active_world >= 0 && app->active_world < app->world_count &&
-        app->save_path[0] != '\0') {
-        save_world(app->save_path, &app->world, &app->player);
-        app->worlds[app->active_world].seed = app->world.seed;
-        worlds_write_index(app);
-    }
+    save_active_world(app);
     app->show_inventory = false;
     app->state = STATE_TITLE;
     app->menu_choice = 0;
@@ -948,8 +1058,23 @@ static void render_worlds(App *app) {
         ui_text(&ui, r.x + 20.0f, r.y + 13.0f, 2.0f, app->worlds[i].name, name_shadow);
         ui_text(&ui, r.x + 18.0f, r.y + 11.0f, 2.0f, app->worlds[i].name,
                 selected ? title : text_color);
-        ui_text(&ui, r.x + r.w - 18.0f - ui_text_width(seed, 1.5f), r.y + 16.0f, 1.5f, seed,
+        ui_text(&ui, r.x + r.w - 86.0f - ui_text_width(seed, 1.5f), r.y + 16.0f, 1.5f, seed,
                 muted);
+
+        /* First click arms the button, the second one erases the world. */
+        const UiRect del = worlds_delete_rect(app, i);
+        const bool armed = (app->world_delete_confirm == i);
+        const float del_back[4] = { armed ? 0.62f : 0.22f, armed ? 0.15f : 0.23f,
+                                    armed ? 0.16f : 0.26f, 1.0f };
+        ui_rect(&ui, del.x, del.y, del.w, del.h, del_back);
+        const float del_edge[4] = { armed ? 0.98f : 0.52f, armed ? 0.44f : 0.54f,
+                                    armed ? 0.40f : 0.58f, 1.0f };
+        ui_rect(&ui, del.x, del.y, del.w, 2.0f, del_edge);
+        ui_rect(&ui, del.x, del.y + del.h - 2.0f, del.w, 2.0f, del_edge);
+        const float del_text[4] = { armed ? 1.0f : 0.84f, armed ? 0.64f : 0.86f,
+                                    armed ? 0.60f : 0.90f, 1.0f };
+        ui_text_centered(&ui, del.x + del.w * 0.5f, del.y + (del.h - 7.0f * 1.4f) * 0.5f, 1.4f,
+                         armed ? "SURE?" : "DELETE", del_text);
     }
 
     for (int i = 0; i < 2; ++i) {
@@ -958,7 +1083,8 @@ static void render_worlds(App *app) {
     }
 
     ui_text_centered(&ui, width * 0.5f, height - 34.0f, 1.5f,
-                     "CLICK A WORLD TO PLAY IT   OR PICK ONE AND PRESS ENTER", muted);
+                     "CLICK A WORLD TO PLAY IT   DELETE ERASES IT (TWO CLICKS)   ESC BACK",
+                     muted);
 
     if (app->toast_timer > 0.0f) {
         ui_text_centered(&ui, width * 0.5f, height - 62.0f, 1.7f, app->toast, title);
@@ -1365,6 +1491,17 @@ static void handle_worlds_input(App *app, GLFWwindow *window) {
     if (key_pressed(app, GLFW_KEY_ESCAPE)) {
         app->state = STATE_TITLE;
         app->menu_choice = 0;
+        app->world_delete_confirm = -1;
+        return;
+    }
+
+    if (app->world_count > 0 && key_pressed(app, GLFW_KEY_DELETE)) {
+        if (app->world_delete_confirm == app->world_choice) {
+            delete_world(app, app->world_choice);
+        } else {
+            app->world_delete_confirm = app->world_choice;
+            set_toast(app, "Press DELETE again to erase it.");
+        }
         return;
     }
 
@@ -1386,6 +1523,20 @@ static void handle_worlds_input(App *app, GLFWwindow *window) {
     }
 
     if (app->input.mouse[0]) {
+        for (int i = 0; i < app->world_count; ++i) {
+            if (!ui_hit(worlds_delete_rect(app, i), app->mouse_x, app->mouse_y)) {
+                continue;
+            }
+            if (app->world_delete_confirm == i) {
+                delete_world(app, i);
+            } else {
+                app->world_delete_confirm = i;
+                set_toast(app, "Click DELETE again to erase it.");
+            }
+            return;
+        }
+        app->world_delete_confirm = -1;
+
         if (ui_hit(worlds_button_rect(app, 0), app->mouse_x, app->mouse_y)) {
             begin_create(app);
             return;
@@ -1393,6 +1544,7 @@ static void handle_worlds_input(App *app, GLFWwindow *window) {
         if (ui_hit(worlds_button_rect(app, 1), app->mouse_x, app->mouse_y)) {
             app->state = STATE_TITLE;
             app->menu_choice = 0;
+            app->world_delete_confirm = -1;
             return;
         }
     }
@@ -1777,6 +1929,7 @@ int main(void) {
     g_app.menu_choice = 1;
     g_app.world_choice = 0;
     g_app.active_world = -1;
+    g_app.world_delete_confirm = -1;
     g_app.create_dimension = BG_UPPERWORLD;
     snprintf(g_app.name_text, sizeof(g_app.name_text), "My World");
     snprintf(g_app.seed_text, sizeof(g_app.seed_text), "1337");
