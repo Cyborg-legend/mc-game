@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SAVE_PATH "blockforge_c.sav"
+#define SAVE_PATH "blockforge.sav"
 #define RENDER_RADIUS 5
 #define MAX_TRACKED_COLUMNS 2048
 #define GATE_X 0
@@ -595,7 +595,7 @@ int main(void) {
 #endif
     glfwWindowHint(GLFW_SAMPLES, 4);
 
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "BlockForge C", NULL, NULL);
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "BlockForge", NULL, NULL);
     if (!window) {
         fprintf(stderr, "Failed to create a window with OpenGL 3.3\n");
         glfwTerminate();
