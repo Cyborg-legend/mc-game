@@ -60,6 +60,13 @@ void ui_text_centered(BgUi *ui, float center_x, float y, float scale, const char
 float ui_text_width(const char *text, float scale);
 void renderer_draw_ui(BgRenderer *renderer, const BgUi *ui);
 
+/* Draws a block face or item sprite sampled from the atlas, skipping the
+ * transparent cells of item sprites. */
+void ui_draw_item_icon(BgUi *ui, float x, float y, float size, uint16_t item, float alpha);
+
+/* Hearts in a row: filled ones track the player's health out of 20. */
+void ui_draw_hearts(BgUi *ui, float x, float y, float pixel, int health, int hearts);
+
 /* Representative colour of a block or item, for the hotbar icons. */
 void block_color(BlockId block, float rgb[3]);
 void item_color(uint16_t item, float rgb[3]);

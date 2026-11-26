@@ -3,12 +3,24 @@
 
 #include <GLFW/glfw3.h>
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define SAVE_PATH "blockforge.sav"
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
+#define WORLD_DIR "worlds"
+#define WORLD_INDEX "worlds/worlds.idx"
+#define LEGACY_SAVE "blockforge.sav"
+#define MAX_WORLDS 8
+#define WORLD_NAME_MAX 24
 #define RENDER_RADIUS 5
 #define MAX_TRACKED_COLUMNS 2048
 #define EYE_HEIGHT 1.62f
@@ -17,11 +29,19 @@
 
 typedef enum {
     STATE_TITLE,
+    STATE_WORLDS,
     STATE_CREATE,
     STATE_LOADING,
     STATE_PLAYING,
     STATE_PAUSED
 } AppState;
+
+/* One saved world, as listed on the world-select screen. */
+typedef struct WorldEntry {
+    int id;
+    char name[WORLD_NAME_MAX];
+    uint64_t seed;
+} WorldEntry;
 
 typedef struct App {
     World world;
@@ -34,6 +54,7 @@ typedef struct App {
     int pause_choice;
     int create_choice;
     char seed_text[20];
+    char name_text[WORLD_NAME_MAX];
     Dimension create_dimension;
     bool loading;
     Dimension loading_dimension;
@@ -43,11 +64,19 @@ typedef struct App {
     uint64_t tracked[MAX_TRACKED_COLUMNS];
     size_t tracked_count;
     int last_cx, last_cz;
-    bool has_save;
     bool travel_armed;
     BgMobWorld mobs;
-    bool show_crafting;
+    bool show_inventory;
     int craft_choice;
+    WorldEntry worlds[MAX_WORLDS];
+    int world_count;
+    int world_choice;
+    int active_world;
+    char save_path[96];
+    float mouse_x, mouse_y;
+    int mine_x, mine_y, mine_z;
+    float mine_progress;
+    float mine_hint_timer;
     char toast[96];
     float toast_timer;
     int width, height;
@@ -76,16 +105,28 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action, int mo
 
 static void on_char(GLFWwindow *window, unsigned int codepoint) {
     (void)window;
-    if (g_app.state != STATE_CREATE || g_app.create_choice != 0) {
+    if (g_app.state != STATE_CREATE) {
         return;
     }
-    if (codepoint < '0' || codepoint > '9') {
-        return;
-    }
-    const size_t length = strlen(g_app.seed_text);
-    if (length < sizeof(g_app.seed_text) - 1) {
-        g_app.seed_text[length] = (char)codepoint;
-        g_app.seed_text[length + 1] = '\0';
+    if (g_app.create_choice == 0) {
+        if (!(isalnum((int)codepoint) || codepoint == ' ' || codepoint == '-' ||
+              codepoint == '_')) {
+            return;
+        }
+        const size_t length = strlen(g_app.name_text);
+        if (length < sizeof(g_app.name_text) - 1) {
+            g_app.name_text[length] = (char)codepoint;
+            g_app.name_text[length + 1] = '\0';
+        }
+    } else if (g_app.create_choice == 1) {
+        if (codepoint < '0' || codepoint > '9') {
+            return;
+        }
+        const size_t length = strlen(g_app.seed_text);
+        if (length < sizeof(g_app.seed_text) - 1) {
+            g_app.seed_text[length] = (char)codepoint;
+            g_app.seed_text[length + 1] = '\0';
+        }
     }
 }
 
@@ -96,13 +137,27 @@ static void on_mouse_button(GLFWwindow *window, int button, int action, int mods
         return;
     }
     g_app.input.mouse[button] = (action == GLFW_PRESS);
+    g_app.input.mouse_held[button] = (action != GLFW_RELEASE);
 }
 
 static void on_cursor(GLFWwindow *window, double x, double y) {
-    (void)window;
     static double last_x = 0.0;
     static double last_y = 0.0;
     static bool initialised = false;
+
+    /* Menus are laid out in framebuffer pixels, so the cursor is scaled to
+     * match on displays where the window and the framebuffer differ. */
+    int window_w = 0;
+    int window_h = 0;
+    int frame_w = 0;
+    int frame_h = 0;
+    glfwGetWindowSize(window, &window_w, &window_h);
+    glfwGetFramebufferSize(window, &frame_w, &frame_h);
+    if (window_w > 0 && window_h > 0) {
+        g_app.mouse_x = (float)(x * (double)frame_w / (double)window_w);
+        g_app.mouse_y = (float)(y * (double)frame_h / (double)window_h);
+    }
+
     if (!initialised) {
         last_x = x;
         last_y = y;
@@ -156,6 +211,255 @@ static void set_toast(App *app, const char *text) {
     snprintf(app->toast, sizeof(app->toast), "%s", text);
     app->toast_timer = 2.6f;
 }
+
+/* ---------------------------------------------------------------- layout */
+
+/* Menus share these rectangles between drawing and hit testing so a click
+ * always lands on the control it looks like it should. */
+typedef struct UiRect {
+    float x, y, w, h;
+} UiRect;
+
+static bool ui_hit(UiRect r, float x, float y) {
+    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+static UiRect button_rect(float center_x, float start_y, float w, float h, float gap,
+                          int index) {
+    UiRect r;
+    r.x = center_x - w * 0.5f;
+    r.y = start_y + (float)index * (h + gap);
+    r.w = w;
+    r.h = h;
+    return r;
+}
+
+static UiRect title_button_rect(const App *app, int index) {
+    return button_rect((float)app->width * 0.5f, (float)app->height * 0.44f, 420.0f, 46.0f,
+                       12.0f, index);
+}
+
+static UiRect pause_button_rect(const App *app, int index) {
+    return button_rect((float)app->width * 0.5f, (float)app->height * 0.36f, 470.0f, 46.0f,
+                       12.0f, index);
+}
+
+static UiRect create_field_rect(const App *app, int index) {
+    UiRect r;
+    r.w = 560.0f;
+    r.h = 50.0f;
+    r.x = (float)app->width * 0.5f - r.w * 0.5f;
+    r.y = (float)app->height * (0.28f + 0.105f * (float)index);
+    return r;
+}
+
+static UiRect create_button_rect(const App *app) {
+    UiRect r;
+    r.x = (float)app->width * 0.5f - 200.0f;
+    r.y = (float)app->height * 0.65f;
+    r.w = 400.0f;
+    r.h = 50.0f;
+    return r;
+}
+
+static UiRect worlds_row_rect(const App *app, int index) {
+    UiRect r;
+    r.x = (float)app->width * 0.5f - 330.0f;
+    r.y = (float)app->height * 0.235f + (float)index * 50.0f;
+    r.w = 660.0f;
+    r.h = 42.0f;
+    return r;
+}
+
+static UiRect worlds_button_rect(const App *app, int index) {
+    const float w = 240.0f;
+    const float gap = 24.0f;
+    const float total = w * 2.0f + gap;
+    UiRect r;
+    r.x = (float)app->width * 0.5f - total * 0.5f + (float)index * (w + gap);
+    r.y = (float)app->height * 0.86f;
+    r.w = w;
+    r.h = 46.0f;
+    return r;
+}
+
+static UiRect inventory_panel_rect(const App *app) {
+    UiRect r;
+    r.w = (float)app->width - 80.0f;
+    if (r.w > 900.0f) {
+        r.w = 900.0f;
+    }
+    r.h = (float)app->height - 80.0f;
+    if (r.h > 600.0f) {
+        r.h = 600.0f;
+    }
+    r.x = ((float)app->width - r.w) * 0.5f;
+    r.y = ((float)app->height - r.h) * 0.5f;
+    return r;
+}
+
+static UiRect inventory_slot_rect(const App *app, int index) {
+    const float slot = 46.0f;
+    const float gap = 6.0f;
+    const float total = (float)HOTBAR_SLOTS * slot + (float)(HOTBAR_SLOTS - 1) * gap;
+    const UiRect panel = inventory_panel_rect(app);
+    UiRect r;
+    r.x = (float)app->width * 0.5f - total * 0.5f + (float)index * (slot + gap);
+    r.y = panel.y + 70.0f;
+    r.w = slot;
+    r.h = slot;
+    return r;
+}
+
+static UiRect inventory_row_rect(const App *app, int index) {
+    const UiRect panel = inventory_panel_rect(app);
+    UiRect r;
+    r.x = panel.x + 18.0f;
+    r.y = panel.y + 190.0f + (float)index * 24.0f;
+    r.w = panel.w - 36.0f;
+    r.h = 22.0f;
+    return r;
+}
+
+/* --------------------------------------------------------------- worlds */
+
+static void world_save_path(int id, char *out, size_t size) {
+    snprintf(out, size, "%s/slot_%d.sav", WORLD_DIR, id);
+}
+
+static void ensure_world_dir(void) {
+    FILE *probe = fopen(WORLD_INDEX, "rb");
+    if (probe) {
+        fclose(probe);
+        return;
+    }
+#ifdef _WIN32
+    _mkdir(WORLD_DIR);
+#else
+    mkdir(WORLD_DIR, 0755);
+#endif
+}
+
+static void worlds_write_index(const App *app) {
+    FILE *file = fopen(WORLD_INDEX, "wb");
+    if (!file) {
+        return;
+    }
+    fprintf(file, "BLOCKFORGE-WORLDS 1\n");
+    for (int i = 0; i < app->world_count; ++i) {
+        fprintf(file, "%d\t%s\t%llu\n", app->worlds[i].id, app->worlds[i].name,
+                (unsigned long long)app->worlds[i].seed);
+    }
+    fclose(file);
+}
+
+static void worlds_read_index(App *app) {
+    app->world_count = 0;
+    FILE *file = fopen(WORLD_INDEX, "rb");
+    if (!file) {
+        return;
+    }
+
+    char line[160];
+    bool header = true;
+    while (fgets(line, sizeof(line), file) && app->world_count < MAX_WORLDS) {
+        if (header) {
+            header = false;
+            if (strncmp(line, "BLOCKFORGE-WORLDS", 17) == 0) {
+                continue;
+            }
+        }
+        int id = 0;
+        char name[WORLD_NAME_MAX] = { 0 };
+        unsigned long long seed = 0;
+        if (sscanf(line, "%d\t%23[^\t]\t%llu", &id, name, &seed) < 2) {
+            continue;
+        }
+        /* A world whose save went missing is not offered any more. */
+        char path[96];
+        world_save_path(id, path, sizeof(path));
+        FILE *probe = fopen(path, "rb");
+        if (!probe) {
+            continue;
+        }
+        fclose(probe);
+
+        WorldEntry *entry = &app->worlds[app->world_count++];
+        entry->id = id;
+        snprintf(entry->name, sizeof(entry->name), "%s", name);
+        entry->seed = (uint64_t)seed;
+    }
+    fclose(file);
+}
+
+static int worlds_next_id(const App *app) {
+    int id = 1;
+    for (int i = 0; i < app->world_count; ++i) {
+        if (app->worlds[i].id >= id) {
+            id = app->worlds[i].id + 1;
+        }
+    }
+    return id;
+}
+
+/* Builds before this one kept a single save beside the executable, so adopt
+ * it as the first world instead of losing somebody's build. */
+static void worlds_import_legacy(App *app) {
+    if (app->world_count > 0) {
+        return;
+    }
+    FILE *legacy = fopen(LEGACY_SAVE, "rb");
+    if (!legacy) {
+        return;
+    }
+    fclose(legacy);
+
+    char path[96];
+    world_save_path(1, path, sizeof(path));
+    FILE *existing = fopen(path, "rb");
+    if (existing) {
+        fclose(existing);
+        return;
+    }
+
+    if (rename(LEGACY_SAVE, path) != 0) {
+        FILE *src = fopen(LEGACY_SAVE, "rb");
+        FILE *dst = fopen(path, "wb");
+        if (!src || !dst) {
+            if (src) {
+                fclose(src);
+            }
+            if (dst) {
+                fclose(dst);
+            }
+            return;
+        }
+        char buffer[8192];
+        size_t read = 0;
+        while ((read = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+            fwrite(buffer, 1, read, dst);
+        }
+        fclose(src);
+        fclose(dst);
+        remove(LEGACY_SAVE);
+    }
+
+    WorldEntry *entry = &app->worlds[app->world_count++];
+    entry->id = 1;
+    snprintf(entry->name, sizeof(entry->name), "Old World");
+    entry->seed = 0;
+    worlds_write_index(app);
+}
+
+/* Fills the create screen with sensible defaults for the next world. */
+static void begin_create(App *app) {
+    app->state = STATE_CREATE;
+    app->create_choice = 0;
+    app->create_dimension = BG_UPPERWORLD;
+    snprintf(app->name_text, sizeof(app->name_text), "World %d", app->world_count + 1);
+    snprintf(app->seed_text, sizeof(app->seed_text), "%d", 1337 + app->world_count * 101);
+}
+
 
 static void reset_streaming(App *app) {
     app->tracked_count = 0;
@@ -363,25 +667,62 @@ static void update_loading(App *app, GLFWwindow *window) {
     mobs_clear(&app->mobs);
 
     stream_around_player(app);
+    /* A world exists on disk from the moment it is playable. */
+    if (app->save_path[0] != '\0' && app->active_world >= 0) {
+        save_world(app->save_path, &app->world, &app->player);
+        worlds_write_index(app);
+    }
     app->state = STATE_PLAYING;
     set_cursor_captured(window, true);
 }
 
 static void start_new_world(App *app, GLFWwindow *window) {
     (void)window;
-    const uint64_t seed = (uint64_t)strtoull(app->seed_text, NULL, 10);
-    world_set_seed(&app->world, seed ? seed : 1337u);
+    if (app->world_count >= MAX_WORLDS) {
+        set_toast(app, "The world list is full.");
+        app->state = STATE_WORLDS;
+        return;
+    }
+
+    const uint64_t typed = (uint64_t)strtoull(app->seed_text, NULL, 10);
+    const uint64_t seed = typed ? typed : 1337u;
+
+    WorldEntry *entry = &app->worlds[app->world_count];
+    entry->id = worlds_next_id(app);
+    snprintf(entry->name, sizeof(entry->name), "%s",
+             app->name_text[0] != '\0' ? app->name_text : "New World");
+    entry->seed = seed;
+    app->active_world = app->world_count;
+    app->world_count++;
+    worlds_write_index(app);
+    world_save_path(entry->id, app->save_path, sizeof(app->save_path));
+
+    world_set_seed(&app->world, seed);
     begin_loading(app, app->create_dimension);
 }
 
 static bool load_game(App *app, GLFWwindow *window) {
-    if (!load_world(SAVE_PATH, &app->world, &app->player)) {
+    if (app->world_choice < 0 || app->world_choice >= app->world_count) {
         return false;
     }
+
+    const int index = app->world_choice;
+    char path[96];
+    world_save_path(app->worlds[index].id, path, sizeof(path));
+    if (!load_world(path, &app->world, &app->player)) {
+        return false;
+    }
+
+    snprintf(app->save_path, sizeof(app->save_path), "%s", path);
+    app->active_world = index;
+    app->worlds[index].seed = app->world.seed;
+    worlds_write_index(app);
+
     renderer_set_environment(&app->renderer, app->world.dimension);
     reset_streaming(app);
     stream_around_player(app);
     app->travel_armed = false;
+    app->show_inventory = false;
     mobs_clear(&app->mobs);
     app->state = STATE_PLAYING;
     set_cursor_captured(window, true);
@@ -423,8 +764,13 @@ static void travel(App *app) {
 }
 
 static void save_and_title(App *app, GLFWwindow *window) {
-    save_world(SAVE_PATH, &app->world, &app->player);
-    app->has_save = true;
+    if (app->active_world >= 0 && app->active_world < app->world_count &&
+        app->save_path[0] != '\0') {
+        save_world(app->save_path, &app->world, &app->player);
+        app->worlds[app->active_world].seed = app->world.seed;
+        worlds_write_index(app);
+    }
+    app->show_inventory = false;
     app->state = STATE_TITLE;
     app->menu_choice = 0;
     set_cursor_captured(window, false);
@@ -529,20 +875,94 @@ static void render_title(App *app) {
                            "TWO REALMS. ONE RIFT.", soft);
     draw_splash(&ui, width * 0.5f + 300.0f, height * 0.185f, app->time);
 
-    const float scale = 2.4f;
-    const float bw = 420.0f;
-    const float bh = 46.0f;
-    const float start_y = height * 0.44f;
-    const char *labels[3] = { "CONTINUE", "NEW WORLD", "QUIT GAME" };
+    const char *labels[3] = { "PLAY", "NEW WORLD", "QUIT GAME" };
     for (int i = 0; i < 3; ++i) {
-        const bool enabled = !(i == 0 && !app->has_save);
-        draw_button(&ui, width * 0.5f - bw * 0.5f, start_y + (float)i * (bh + 12.0f), bw, bh,
-                    scale, labels[i], app->menu_choice == i && enabled, enabled);
+        const UiRect r = title_button_rect(app, i);
+        const bool enabled = !(i == 0 && app->world_count == 0);
+        draw_button(&ui, r.x, r.y, r.w, r.h, 2.4f, labels[i],
+                    app->menu_choice == i && enabled, enabled);
+    }
+
+    if (app->world_count > 0) {
+        char line[64];
+        snprintf(line, sizeof(line), "%d WORLD%s SAVED", app->world_count,
+                 app->world_count == 1 ? "" : "S");
+        const float count_color[4] = { 0.80f, 0.84f, 0.90f, 0.85f };
+        ui_text_centered(&ui, width * 0.5f, height * 0.44f + 3.0f * 58.0f + 8.0f, 1.5f, line,
+                         count_color);
     }
 
     ui_text_centered(&ui, width * 0.5f, height - 40.0f, 1.5f,
-                     "WASD MOVE   SPACE JUMP   LMB MINE/ATTACK   RMB BUILD/LIGHT   C CRAFT   F EAT",
+                     "WASD MOVE   SPACE JUMP   LMB MINE   RMB BUILD   E INVENTORY   F EAT",
                      soft);
+
+    renderer_draw_ui(&app->renderer, &ui);
+    ui_free(&ui);
+}
+
+static void render_worlds(App *app) {
+    BgUi ui;
+    memset(&ui, 0, sizeof(ui));
+
+    const float width = (float)app->width;
+    const float height = (float)app->height;
+    menu_background(&ui, width, height);
+
+    draw_logo(&ui, width * 0.5f, height * 0.055f, 5.0f);
+    const float title[4] = { 0.98f, 0.90f, 0.62f, 1.0f };
+    const float text_color[4] = { 0.92f, 0.94f, 0.98f, 1.0f };
+    const float muted[4] = { 0.62f, 0.66f, 0.74f, 1.0f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.16f, 3.0f, "SELECT WORLD", title);
+
+    if (app->world_count == 0) {
+        draw_shadowed_centered(&ui, width * 0.5f, height * 0.36f, 2.2f, "NO WORLDS YET",
+                               text_color);
+        ui_text_centered(&ui, width * 0.5f, height * 0.44f, 1.8f,
+                         "MAKE ONE AND START BUILDING.", muted);
+    }
+
+    for (int i = 0; i < app->world_count; ++i) {
+        const UiRect r = worlds_row_rect(app, i);
+        const bool selected = (i == app->world_choice);
+
+        const float border[4] = { 0.05f, 0.05f, 0.06f, 0.95f };
+        ui_rect(&ui, r.x - 3.0f, r.y - 3.0f, r.w + 6.0f, r.h + 6.0f, border);
+        const float fill[4] = { selected ? 0.44f : 0.30f, selected ? 0.45f : 0.31f,
+                                selected ? 0.48f : 0.33f, 1.0f };
+        ui_rect(&ui, r.x, r.y, r.w, r.h, fill);
+        const float light[4] = { 0.64f, 0.65f, 0.68f, selected ? 1.0f : 0.55f };
+        ui_rect(&ui, r.x, r.y, r.w, 2.0f, light);
+        ui_rect(&ui, r.x, r.y, 2.0f, r.h, light);
+        const float dark[4] = { 0.11f, 0.11f, 0.13f, 0.90f };
+        ui_rect(&ui, r.x, r.y + r.h - 2.0f, r.w, 2.0f, dark);
+        ui_rect(&ui, r.x + r.w - 2.0f, r.y, 2.0f, r.h, dark);
+
+        char seed[48];
+        if (app->worlds[i].seed != 0) {
+            snprintf(seed, sizeof(seed), "SEED %llu",
+                     (unsigned long long)app->worlds[i].seed);
+        } else {
+            snprintf(seed, sizeof(seed), "SEED UNKNOWN");
+        }
+        const float name_shadow[4] = { 0.06f, 0.06f, 0.07f, 0.92f };
+        ui_text(&ui, r.x + 20.0f, r.y + 13.0f, 2.0f, app->worlds[i].name, name_shadow);
+        ui_text(&ui, r.x + 18.0f, r.y + 11.0f, 2.0f, app->worlds[i].name,
+                selected ? title : text_color);
+        ui_text(&ui, r.x + r.w - 18.0f - ui_text_width(seed, 1.5f), r.y + 16.0f, 1.5f, seed,
+                muted);
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const UiRect r = worlds_button_rect(app, i);
+        draw_button(&ui, r.x, r.y, r.w, r.h, 2.2f, i == 0 ? "NEW WORLD" : "BACK", false, true);
+    }
+
+    ui_text_centered(&ui, width * 0.5f, height - 34.0f, 1.5f,
+                     "CLICK A WORLD TO PLAY IT   OR PICK ONE AND PRESS ENTER", muted);
+
+    if (app->toast_timer > 0.0f) {
+        ui_text_centered(&ui, width * 0.5f, height - 62.0f, 1.7f, app->toast, title);
+    }
 
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
@@ -556,34 +976,40 @@ static void render_create(App *app) {
     const float height = (float)app->height;
     menu_background(&ui, width, height);
 
-    draw_logo(&ui, width * 0.5f, height * 0.06f, 5.0f);
+    draw_logo(&ui, width * 0.5f, height * 0.045f, 4.5f);
     const float title[4] = { 0.98f, 0.90f, 0.62f, 1.0f };
-    draw_shadowed_centered(&ui, width * 0.5f, height * 0.19f, 3.0f, "NEW WORLD", title);
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.165f, 2.8f, "NEW WORLD", title);
 
-    const float field_w = 560.0f;
-    const float field_h = 54.0f;
-    const float field_x = width * 0.5f - field_w * 0.5f;
+    char name_line[64];
+    snprintf(name_line, sizeof(name_line), "NAME  %s%s", app->name_text,
+             app->create_choice == 0 ? "_" : "");
+    const UiRect name_field = create_field_rect(app, 0);
+    draw_field(&ui, name_field.x, name_field.y, name_field.w, name_field.h, 2.0f, name_line,
+               app->create_choice == 0);
 
     char seed_line[64];
     snprintf(seed_line, sizeof(seed_line), "SEED  %s%s", app->seed_text,
-             app->create_choice == 0 ? "_" : "");
-    draw_field(&ui, field_x, height * 0.33f, field_w, field_h, 2.2f, seed_line,
-               app->create_choice == 0);
+             app->create_choice == 1 ? "_" : "");
+    const UiRect seed_field = create_field_rect(app, 1);
+    draw_field(&ui, seed_field.x, seed_field.y, seed_field.w, seed_field.h, 2.0f, seed_line,
+               app->create_choice == 1);
 
     char realm_line[64];
     snprintf(realm_line, sizeof(realm_line), "REALM  %s%s%s",
-             app->create_choice == 1 ? "< " : "",
+             app->create_choice == 2 ? "< " : "",
              app->create_dimension == BG_UPPERWORLD ? "UPPERWORLD" : "UNDERWORLD",
-             app->create_choice == 1 ? " >" : "");
-    draw_field(&ui, field_x, height * 0.45f, field_w, field_h, 2.2f, realm_line,
-               app->create_choice == 1);
+             app->create_choice == 2 ? " >" : "");
+    const UiRect realm_field = create_field_rect(app, 2);
+    draw_field(&ui, realm_field.x, realm_field.y, realm_field.w, realm_field.h, 2.0f,
+               realm_line, app->create_choice == 2);
 
-    draw_button(&ui, width * 0.5f - 200.0f, height * 0.62f, 400.0f, 50.0f, 2.4f,
-                "CREATE WORLD", app->create_choice == 2, true);
+    const UiRect button = create_button_rect(app);
+    draw_button(&ui, button.x, button.y, button.w, button.h, 2.4f, "CREATE WORLD",
+                app->create_choice == 3, true);
 
     const float hint[4] = { 0.82f, 0.84f, 0.88f, 0.85f };
-    ui_text_centered(&ui, width * 0.5f, height * 0.78f, 1.6f,
-                     "UP/DOWN MOVES   LEFT/RIGHT CHANGES REALM   ENTER CONFIRMS   ESC BACK",
+    ui_text_centered(&ui, width * 0.5f, height * 0.80f, 1.6f,
+                     "TYPE A NAME AND SEED   LEFT/RIGHT CHANGES REALM   ENTER CREATES   ESC BACK",
                      hint);
 
     renderer_draw_ui(&app->renderer, &ui);
@@ -602,13 +1028,10 @@ static void render_pause(App *app) {
     const float title[4] = { 0.98f, 0.92f, 0.72f, 1.0f };
     draw_shadowed_centered(&ui, width * 0.5f, height * 0.14f, 5.0f, "GAME PAUSED", title);
 
-    const float scale = 2.4f;
-    const float bw = 470.0f;
-    const float bh = 46.0f;
     const char *labels[3] = { "BACK TO GAME", "SAVE AND QUIT TO TITLE", "QUIT TO DESKTOP" };
     for (int i = 0; i < 3; ++i) {
-        draw_button(&ui, width * 0.5f - bw * 0.5f, height * 0.36f + (float)i * (bh + 12.0f),
-                    bw, bh, scale, labels[i], i == app->pause_choice, true);
+        const UiRect r = pause_button_rect(app, i);
+        draw_button(&ui, r.x, r.y, r.w, r.h, 2.4f, labels[i], i == app->pause_choice, true);
     }
 
     char where[128];
@@ -651,120 +1074,187 @@ static void recipe_line(const BgRecipe *recipe, char *out, size_t size) {
     }
 }
 
-static void render_crafting(App *app) {
+/* The pack and the recipe list share one screen: nine real slots across the
+ * top, hearts under them, then every recipe with its output icon. */
+static void render_inventory(App *app) {
     BgUi ui;
     memset(&ui, 0, sizeof(ui));
 
     const float width = (float)app->width;
     const float height = (float)app->height;
-    const float dim[4] = { 0.02f, 0.02f, 0.03f, 0.74f };
+    const float dim[4] = { 0.02f, 0.02f, 0.03f, 0.78f };
     ui_rect(&ui, 0.0f, 0.0f, width, height, dim);
 
+    const UiRect panel = inventory_panel_rect(app);
     const float title[4] = { 0.98f, 0.92f, 0.72f, 1.0f };
     const float text_color[4] = { 0.90f, 0.92f, 0.96f, 1.0f };
-    const float muted[4] = { 0.56f, 0.60f, 0.68f, 1.0f };
+    const float muted[4] = { 0.60f, 0.64f, 0.72f, 1.0f };
     const bool near_table = player_near_table(&app->world, &app->player);
 
-    draw_shadowed_centered(&ui, width * 0.5f, height * 0.055f, 4.0f, "CRAFTING", title);
-    ui_text_centered(&ui, width * 0.5f, height * 0.13f, 1.6f,
+    const float border[4] = { 0.04f, 0.04f, 0.05f, 0.95f };
+    ui_rect(&ui, panel.x - 4.0f, panel.y - 4.0f, panel.w + 8.0f, panel.h + 8.0f, border);
+    const float plate[4] = { 0.16f, 0.16f, 0.18f, 0.97f };
+    ui_rect(&ui, panel.x, panel.y, panel.w, panel.h, plate);
+    const float light[4] = { 0.42f, 0.43f, 0.47f, 0.90f };
+    ui_rect(&ui, panel.x, panel.y, panel.w, 3.0f, light);
+    ui_rect(&ui, panel.x, panel.y, 3.0f, panel.h, light);
+    const float dark[4] = { 0.07f, 0.07f, 0.08f, 0.95f };
+    ui_rect(&ui, panel.x, panel.y + panel.h - 3.0f, panel.w, 3.0f, dark);
+    ui_rect(&ui, panel.x + panel.w - 3.0f, panel.y, 3.0f, panel.h, dark);
+
+    draw_shadowed_centered(&ui, width * 0.5f, panel.y + 12.0f, 3.0f, "INVENTORY", title);
+    ui_text_centered(&ui, width * 0.5f, panel.y + 46.0f, 1.5f,
                      near_table ? "CRAFTING TABLE IN REACH" : "NO TABLE: BASIC RECIPES ONLY",
                      near_table ? title : muted);
 
-    float y = height * 0.21f;
+    for (int i = 0; i < HOTBAR_SLOTS; ++i) {
+        const UiRect r = inventory_slot_rect(app, i);
+        const bool selected = (i == app->player.selected);
+        const float cell[4] = { 0.10f, 0.10f, 0.11f, 0.96f };
+        ui_rect(&ui, r.x, r.y, r.w, r.h, cell);
+        const float bevel[4] = { 0.30f, 0.31f, 0.34f, 0.95f };
+        ui_rect(&ui, r.x, r.y, r.w, 2.0f, bevel);
+        ui_rect(&ui, r.x, r.y, 2.0f, r.h, bevel);
+
+        const BgStack *stack = &app->player.inventory[i];
+        if (stack->count > 0) {
+            ui_draw_item_icon(&ui, r.x + 4.0f, r.y + 4.0f, r.w - 8.0f, stack->item, 1.0f);
+        }
+
+        char key[4];
+        snprintf(key, sizeof(key), "%d", i + 1);
+        ui_text(&ui, r.x + 4.0f, r.y + 2.0f, 1.2f, key, muted);
+
+        if (stack->count > 1) {
+            char count[8];
+            snprintf(count, sizeof(count), "%u", (unsigned)stack->count);
+            const float count_shadow[4] = { 0.05f, 0.05f, 0.06f, 0.90f };
+            ui_text(&ui, r.x + r.w - 3.0f - ui_text_width(count, 1.5f), r.y + r.h - 9.0f,
+                    1.5f, count, count_shadow);
+            ui_text(&ui, r.x + r.w - 4.0f - ui_text_width(count, 1.5f), r.y + r.h - 10.0f,
+                    1.5f, count, text_color);
+        }
+
+        if (selected) {
+            const float frame[4] = { 0.98f, 0.98f, 0.94f, 0.95f };
+            ui_rect(&ui, r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, 2.0f, frame);
+            ui_rect(&ui, r.x - 2.0f, r.y + r.h, r.w + 4.0f, 2.0f, frame);
+            ui_rect(&ui, r.x - 2.0f, r.y - 2.0f, 2.0f, r.h + 4.0f, frame);
+            ui_rect(&ui, r.x + r.w, r.y - 2.0f, 2.0f, r.h + 4.0f, frame);
+        }
+    }
+
+    ui_draw_hearts(&ui, width * 0.5f - 100.0f, panel.y + 126.0f, 2.0f, app->player.health, 10);
+
+    const BgStack *held = &app->player.inventory[app->player.selected];
+    if (held->count > 0) {
+        ui_text_centered(&ui, width * 0.5f, panel.y + 148.0f, 1.5f, item_name(held->item),
+                         muted);
+    }
+
+    const float sub[4] = { 0.86f, 0.82f, 0.60f, 0.95f };
+    ui_text(&ui, panel.x + 20.0f, panel.y + 166.0f, 1.6f, "CRAFTING", sub);
+
     for (int i = 0; i < recipe_count(); ++i) {
         const BgRecipe *recipe = recipe_at(i);
+        if (!recipe) {
+            continue;
+        }
+        const UiRect r = inventory_row_rect(app, i);
         const bool can = recipe_can_craft(app->player.inventory, recipe, near_table);
         const bool selected = (i == app->craft_choice);
 
+        if (selected) {
+            const float row_plate[4] = { 0.24f, 0.26f, 0.32f, 0.95f };
+            ui_rect(&ui, r.x, r.y, r.w, r.h, row_plate);
+            const float edge[4] = { 0.90f, 0.78f, 0.40f, 1.0f };
+            ui_rect(&ui, r.x, r.y, 3.0f, r.h, edge);
+        }
+
+        ui_draw_item_icon(&ui, r.x + 6.0f, r.y + 3.0f, 16.0f, recipe->output.item,
+                          can ? 1.0f : 0.55f);
+
         char line[128];
         recipe_line(recipe, line, sizeof(line));
-
-        const float row_w = 660.0f;
-        const float row_x = width * 0.5f - row_w * 0.5f;
-        if (selected) {
-            const float plate[4] = { 0.10f, 0.12f, 0.17f, 0.95f };
-            ui_rect(&ui, row_x, y - 8.0f, row_w, 30.0f, plate);
-            const float edge[4] = { 0.90f, 0.78f, 0.40f, 1.0f };
-            ui_rect(&ui, row_x, y - 8.0f, 3.0f, 30.0f, edge);
-        }
-        const float color[4] = { can ? 0.84f : 0.44f, can ? 0.90f : 0.46f,
-                                 can ? 0.98f : 0.52f, 1.0f };
-        ui_text_centered(&ui, width * 0.5f, y, 2.0f, line, color);
-        y += 31.0f;
+        const float color[4] = { can ? 0.86f : 0.46f, can ? 0.92f : 0.48f,
+                                 can ? 0.98f : 0.54f, 1.0f };
+        ui_text(&ui, r.x + 30.0f, r.y + 5.0f, 1.7f, line, color);
     }
 
-    float inv_y = height * 0.73f;
-    ui_text_centered(&ui, width * 0.5f, inv_y, 1.6f, "INVENTORY", muted);
-    inv_y += 26.0f;
-
-    char line[160] = { 0 };
-    size_t used = 0;
-    for (int item = 1; item < BG_ITEM_COUNT; ++item) {
-        const int count = inventory_count(app->player.inventory, (uint16_t)item);
-        if (count <= 0) {
-            continue;
-        }
-        char part[48];
-        snprintf(part, sizeof(part), "%s X%d   ", item_name((uint16_t)item), count);
-        if (used + strlen(part) >= sizeof(line) - 1 || used > 68) {
-            ui_text_centered(&ui, width * 0.5f, inv_y, 1.5f, line, text_color);
-            inv_y += 20.0f;
-            line[0] = '\0';
-            used = 0;
-        }
-        const size_t length = strlen(part);
-        memcpy(line + used, part, length + 1);
-        used += length;
-    }
-    if (used > 0) {
-        ui_text_centered(&ui, width * 0.5f, inv_y, 1.5f, line, text_color);
-    }
-
-    const float tip[4] = { 0.86f, 0.80f, 0.56f, 0.90f };
-    ui_text_centered(&ui, width * 0.5f, height - 92.0f, 1.5f,
-                     "4X5 VOIDSTONE FRAME + EMBER SHARD OPENS A RIFT", tip);
-    ui_text_centered(&ui, width * 0.5f, height - 62.0f, 1.7f,
-                     "UP/DOWN SELECT   ENTER CRAFT   C CLOSE", text_color);
+    ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 42.0f, 1.5f,
+                     "CLICK A RECIPE TO CRAFT IT   UP/DOWN + ENTER ALSO WORKS", text_color);
+    ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 18.0f, 1.5f,
+                     "CLICK A SLOT OR PRESS 1-9 TO HOLD IT   E OR ESC CLOSES", muted);
 
     if (app->toast_timer > 0.0f) {
-        ui_text_centered(&ui, width * 0.5f, height - 120.0f, 1.7f, app->toast, title);
+        ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 66.0f, 1.6f, app->toast, title);
     }
 
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
 }
 
-static void handle_crafting_input(App *app, GLFWwindow *window) {
-    if (key_pressed(app, GLFW_KEY_C) || key_pressed(app, GLFW_KEY_ESCAPE)) {
-        app->show_crafting = false;
+static void craft_selected(App *app) {
+    const bool near_table = player_near_table(&app->world, &app->player);
+    const BgRecipe *recipe = recipe_at(app->craft_choice);
+    if (!recipe) {
+        return;
+    }
+    if (recipe->needs_table && !near_table) {
+        set_toast(app, "You need a crafting table nearby.");
+        return;
+    }
+    if (!recipe_can_craft(app->player.inventory, recipe, near_table)) {
+        set_toast(app, "Not enough materials.");
+        return;
+    }
+    recipe_craft(app->player.inventory, recipe, near_table);
+    char message[96];
+    snprintf(message, sizeof(message), "Crafted %s X%d", item_name(recipe->output.item),
+             (int)recipe->output.count);
+    set_toast(app, message);
+}
+
+static void handle_inventory_input(App *app, GLFWwindow *window) {
+    if (key_pressed(app, GLFW_KEY_E) || key_pressed(app, GLFW_KEY_C) ||
+        key_pressed(app, GLFW_KEY_ESCAPE)) {
+        app->show_inventory = false;
         set_cursor_captured(window, true);
         return;
     }
-    if (recipe_count() <= 0) {
+
+    for (int i = 0; i < HOTBAR_SLOTS; ++i) {
+        if (key_pressed(app, GLFW_KEY_1 + i)) {
+            app->player.selected = i;
+        }
+    }
+
+    if (recipe_count() > 0) {
+        if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
+            app->craft_choice = (app->craft_choice + recipe_count() - 1) % recipe_count();
+        }
+        if (key_pressed(app, GLFW_KEY_DOWN) || key_pressed(app, GLFW_KEY_S)) {
+            app->craft_choice = (app->craft_choice + 1) % recipe_count();
+        }
+        if (key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER)) {
+            craft_selected(app);
+        }
+    }
+
+    if (!app->input.mouse[0]) {
         return;
     }
-    if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
-        app->craft_choice = (app->craft_choice + recipe_count() - 1) % recipe_count();
-    }
-    if (key_pressed(app, GLFW_KEY_DOWN) || key_pressed(app, GLFW_KEY_S)) {
-        app->craft_choice = (app->craft_choice + 1) % recipe_count();
-    }
-    if (key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER)) {
-        const bool near_table = player_near_table(&app->world, &app->player);
-        const BgRecipe *recipe = recipe_at(app->craft_choice);
-        if (!recipe) {
+    for (int i = 0; i < HOTBAR_SLOTS; ++i) {
+        if (ui_hit(inventory_slot_rect(app, i), app->mouse_x, app->mouse_y)) {
+            app->player.selected = i;
             return;
         }
-        if (recipe->needs_table && !near_table) {
-            set_toast(app, "You need a crafting table nearby.");
-        } else if (!recipe_can_craft(app->player.inventory, recipe, near_table)) {
-            set_toast(app, "Not enough materials.");
-        } else {
-            recipe_craft(app->player.inventory, recipe, near_table);
-            char message[96];
-            snprintf(message, sizeof(message), "Crafted %s X%d",
-                     item_name(recipe->output.item), (int)recipe->output.count);
-            set_toast(app, message);
+    }
+    for (int i = 0; i < recipe_count(); ++i) {
+        if (ui_hit(inventory_row_rect(app, i), app->mouse_x, app->mouse_y)) {
+            app->craft_choice = i;
+            craft_selected(app);
+            return;
         }
     }
 }
@@ -819,63 +1309,170 @@ static void render_loading(App *app) {
 /* ------------------------------------------------------------- game loop */
 
 static void handle_title_input(App *app, GLFWwindow *window) {
+    const bool has_world = app->world_count > 0;
+
+    for (int i = 0; i < 3; ++i) {
+        if (i == 0 && !has_world) {
+            continue;
+        }
+        if (ui_hit(title_button_rect(app, i), app->mouse_x, app->mouse_y)) {
+            app->menu_choice = i;
+        }
+    }
+
     if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
         app->menu_choice = (app->menu_choice + 2) % 3;
     }
     if (key_pressed(app, GLFW_KEY_DOWN) || key_pressed(app, GLFW_KEY_S)) {
         app->menu_choice = (app->menu_choice + 1) % 3;
     }
-    if (app->menu_choice == 0 && !app->has_save) {
+    if (app->menu_choice == 0 && !has_world) {
         app->menu_choice = 1;
     }
 
-    if (key_pressed(app, GLFW_KEY_ENTER)) {
-        if (app->menu_choice == 0 && app->has_save) {
-            if (!load_game(app, window)) {
-                app->menu_choice = 1;
+    bool activate = key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER);
+    if (app->input.mouse[0]) {
+        for (int i = 0; i < 3; ++i) {
+            if (i == 0 && !has_world) {
+                continue;
             }
+            if (ui_hit(title_button_rect(app, i), app->mouse_x, app->mouse_y)) {
+                app->menu_choice = i;
+                activate = true;
+            }
+        }
+    }
+
+    if (activate) {
+        if (app->menu_choice == 0) {
+            app->world_choice = (app->active_world >= 0 && app->active_world < app->world_count)
+                                    ? app->active_world
+                                    : 0;
+            app->state = STATE_WORLDS;
         } else if (app->menu_choice == 1) {
-            app->state = STATE_CREATE;
-            app->create_choice = 0;
-        } else if (app->menu_choice == 2) {
+            begin_create(app);
+        } else {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
+        return;
     }
     if (key_pressed(app, GLFW_KEY_ESCAPE)) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 }
 
+static void handle_worlds_input(App *app, GLFWwindow *window) {
+    if (key_pressed(app, GLFW_KEY_ESCAPE)) {
+        app->state = STATE_TITLE;
+        app->menu_choice = 0;
+        return;
+    }
+
+    if (app->world_count > 0) {
+        if (app->world_choice < 0 || app->world_choice >= app->world_count) {
+            app->world_choice = 0;
+        }
+        for (int i = 0; i < app->world_count; ++i) {
+            if (ui_hit(worlds_row_rect(app, i), app->mouse_x, app->mouse_y)) {
+                app->world_choice = i;
+            }
+        }
+        if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
+            app->world_choice = (app->world_choice + app->world_count - 1) % app->world_count;
+        }
+        if (key_pressed(app, GLFW_KEY_DOWN) || key_pressed(app, GLFW_KEY_S)) {
+            app->world_choice = (app->world_choice + 1) % app->world_count;
+        }
+    }
+
+    if (app->input.mouse[0]) {
+        if (ui_hit(worlds_button_rect(app, 0), app->mouse_x, app->mouse_y)) {
+            begin_create(app);
+            return;
+        }
+        if (ui_hit(worlds_button_rect(app, 1), app->mouse_x, app->mouse_y)) {
+            app->state = STATE_TITLE;
+            app->menu_choice = 0;
+            return;
+        }
+    }
+
+    bool play = key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER);
+    if (app->input.mouse[0]) {
+        for (int i = 0; i < app->world_count; ++i) {
+            if (ui_hit(worlds_row_rect(app, i), app->mouse_x, app->mouse_y)) {
+                app->world_choice = i;
+                play = true;
+            }
+        }
+    }
+    if (play && app->world_count > 0 && !load_game(app, window)) {
+        set_toast(app, "That world could not be opened.");
+    }
+}
+
 static void handle_create_input(App *app, GLFWwindow *window) {
     if (key_pressed(app, GLFW_KEY_ESCAPE)) {
         app->state = STATE_TITLE;
+        app->menu_choice = 0;
         return;
     }
-    if (key_pressed(app, GLFW_KEY_TAB)) {
-        app->create_choice = (app->create_choice + 1) % 3;
+
+    if (app->input.mouse[0]) {
+        for (int i = 0; i < 3; ++i) {
+            if (!ui_hit(create_field_rect(app, i), app->mouse_x, app->mouse_y)) {
+                continue;
+            }
+            app->create_choice = i;
+            if (i == 2) {
+                app->create_dimension = app->create_dimension == BG_UPPERWORLD
+                                            ? BG_UNDERWORLD
+                                            : BG_UPPERWORLD;
+            }
+        }
+        const UiRect button = create_button_rect(app);
+        if (ui_hit(button, app->mouse_x, app->mouse_y)) {
+            app->create_choice = 3;
+            start_new_world(app, window);
+            return;
+        }
     }
-    if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_DOWN)) {
-        app->create_choice = (app->create_choice + 1) % 3;
+
+    if (key_pressed(app, GLFW_KEY_TAB) || key_pressed(app, GLFW_KEY_UP) ||
+        key_pressed(app, GLFW_KEY_DOWN)) {
+        app->create_choice = (app->create_choice + 1) % 4;
     }
-    if (app->create_choice == 1 &&
+    if (app->create_choice == 2 &&
         (key_pressed(app, GLFW_KEY_LEFT) || key_pressed(app, GLFW_KEY_RIGHT) ||
          key_pressed(app, GLFW_KEY_SPACE))) {
         app->create_dimension = app->create_dimension == BG_UPPERWORLD ? BG_UNDERWORLD
                                                                       : BG_UPPERWORLD;
         return;
     }
-    if (app->create_choice == 0 && key_pressed(app, GLFW_KEY_BACKSPACE)) {
-        const size_t length = strlen(app->seed_text);
-        if (length > 0) {
-            app->seed_text[length - 1] = '\0';
+    if (key_pressed(app, GLFW_KEY_BACKSPACE)) {
+        if (app->create_choice == 0) {
+            const size_t length = strlen(app->name_text);
+            if (length > 0) {
+                app->name_text[length - 1] = '\0';
+            }
+        } else if (app->create_choice == 1) {
+            const size_t length = strlen(app->seed_text);
+            if (length > 0) {
+                app->seed_text[length - 1] = '\0';
+            }
         }
     }
-    if (key_pressed(app, GLFW_KEY_ENTER)) {
+    if (key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER)) {
         start_new_world(app, window);
     }
 }
 
 static void handle_pause_input(App *app, GLFWwindow *window) {
+    for (int i = 0; i < 3; ++i) {
+        if (ui_hit(pause_button_rect(app, i), app->mouse_x, app->mouse_y)) {
+            app->pause_choice = i;
+        }
+    }
     if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
         app->pause_choice = (app->pause_choice + 2) % 3;
     }
@@ -887,38 +1484,134 @@ static void handle_pause_input(App *app, GLFWwindow *window) {
         set_cursor_captured(window, true);
         return;
     }
-    if (key_pressed(app, GLFW_KEY_ENTER)) {
-        if (app->pause_choice == 0) {
-            app->state = STATE_PLAYING;
-            set_cursor_captured(window, true);
-        } else if (app->pause_choice == 1) {
-            save_and_title(app, window);
-        } else {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+
+    bool activate = key_pressed(app, GLFW_KEY_ENTER) || key_pressed(app, GLFW_KEY_KP_ENTER);
+    if (app->input.mouse[0]) {
+        for (int i = 0; i < 3; ++i) {
+            if (ui_hit(pause_button_rect(app, i), app->mouse_x, app->mouse_y)) {
+                app->pause_choice = i;
+                activate = true;
+            }
         }
     }
+    if (!activate) {
+        return;
+    }
+    if (app->pause_choice == 0) {
+        app->state = STATE_PLAYING;
+        set_cursor_captured(window, true);
+    } else if (app->pause_choice == 1) {
+        save_and_title(app, window);
+    } else {
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }
+}
+
+static void mine_tick(App *app, float dt) {
+    int bx = 0;
+    int by = 0;
+    int bz = 0;
+    BlockId type = BG_AIR;
+    int normal[3] = { 0, 0, 0 };
+    if (!player_raycast(&app->player, &app->world, 6.0f, &bx, &by, &bz, &type, normal) ||
+        !block_breakable(type)) {
+        app->mine_progress = 0.0f;
+        return;
+    }
+
+    const BgStack *held = &app->player.inventory[app->player.selected];
+    const uint16_t item = held->count > 0 ? held->item : BG_AIR;
+    const int need = block_pick_tier(type);
+    const int have = item_pick_tier(item);
+    if (need > have) {
+        app->mine_progress = 0.0f;
+        if (app->mine_hint_timer <= 0.0f) {
+            char message[96];
+            snprintf(message, sizeof(message), "%s needs a %s.",
+                     item_name((uint16_t)type),
+                     need >= 2 ? "stone pickaxe" : "pickaxe");
+            set_toast(app, message);
+            app->mine_hint_timer = 3.0f;
+        }
+        return;
+    }
+
+    if (bx != app->mine_x || by != app->mine_y || bz != app->mine_z) {
+        app->mine_x = bx;
+        app->mine_y = by;
+        app->mine_z = bz;
+        app->mine_progress = 0.0f;
+    }
+
+    const float hardness = block_hardness(type);
+    if (hardness <= 0.0f) {
+        app->mine_progress = 0.0f;
+        return;
+    }
+    const float speed = need > 0 ? item_pick_speed(item) : 1.0f;
+    app->mine_progress += dt * speed / hardness;
+    if (app->mine_progress < 1.0f) {
+        return;
+    }
+
+    app->mine_progress = 0.0f;
+    world_set_block(&app->world, bx, by, bz, BG_AIR);
+    remesh_near(app, bx, by, bz);
+    uint16_t drop_item = BG_AIR;
+    int drop_amount = 0;
+    if (block_drop(type, &drop_item, &drop_amount)) {
+        inventory_add(app->player.inventory, drop_item, drop_amount);
+    }
+}
+
+static void render_mining(App *app) {
+    if (app->mine_progress <= 0.0f || app->mine_progress >= 1.0f) {
+        return;
+    }
+    BgUi ui;
+    memset(&ui, 0, sizeof(ui));
+
+    const float w = (float)app->width;
+    const float h = (float)app->height;
+    const float bw = 64.0f;
+    const float bh = 6.0f;
+    const float x = w * 0.5f - bw * 0.5f;
+    const float y = h * 0.5f + 24.0f;
+
+    const float border[4] = { 0.04f, 0.04f, 0.05f, 0.90f };
+    ui_rect(&ui, x - 2.0f, y - 2.0f, bw + 4.0f, bh + 4.0f, border);
+    const float track[4] = { 0.16f, 0.16f, 0.17f, 0.95f };
+    ui_rect(&ui, x, y, bw, bh, track);
+    const float fill[4] = { 0.94f, 0.86f, 0.44f, 0.97f };
+    ui_rect(&ui, x, y, bw * app->mine_progress, bh, fill);
+
+    renderer_draw_ui(&app->renderer, &ui);
+    ui_free(&ui);
 }
 
 static void update_playing(App *app, float dt, GLFWwindow *window) {
     if (key_pressed(app, GLFW_KEY_ESCAPE)) {
         app->state = STATE_PAUSED;
         app->pause_choice = 0;
+        app->show_inventory = false;
+        app->mine_progress = 0.0f;
         set_cursor_captured(window, false);
         return;
     }
 
-    if (app->toast_timer > 0.0f) {
-        app->toast_timer -= dt;
+    if (app->mine_hint_timer > 0.0f) {
+        app->mine_hint_timer -= dt;
     }
 
-    if (key_pressed(app, GLFW_KEY_C)) {
-        app->show_crafting = true;
+    if (key_pressed(app, GLFW_KEY_E) || key_pressed(app, GLFW_KEY_C)) {
+        app->show_inventory = true;
         app->craft_choice = 0;
+        app->mine_progress = 0.0f;
         set_cursor_captured(window, false);
         return;
     }
-    if (app->show_crafting) {
-        handle_crafting_input(app, window);
+    if (app->show_inventory) {
+        handle_inventory_input(app, window);
         mobs_update(&app->mobs, &app->world, &app->player, dt);
         if (app->player.health <= 0) {
             respawn(app);
@@ -941,39 +1634,32 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
 
     player_update(&app->player, dt, &app->input, &app->world);
 
-    if (app->input.mouse[0]) {
+    if (app->input.mouse_held[0]) {
         const int mob_index = mobs_pick(&app->mobs, &app->world, &app->player, 4.0f);
         if (mob_index >= 0) {
-            MobType killed = MOB_TYPE_COUNT;
-            const float dir_x = cosf(app->player.yaw);
-            const float dir_z = sinf(app->player.yaw);
-            if (mobs_damage(&app->mobs, mob_index, 6, dir_x, dir_z, &killed)) {
-                BgStack drops[2];
-                const int drop_count = mob_drops(killed, drops);
-                for (int i = 0; i < drop_count; ++i) {
-                    inventory_add(app->player.inventory, drops[i].item, drops[i].count);
+            app->mine_progress = 0.0f;
+            if (app->input.mouse[0]) {
+                MobType killed = MOB_TYPE_COUNT;
+                const float dir_x = cosf(app->player.yaw);
+                const float dir_z = sinf(app->player.yaw);
+                if (mobs_damage(&app->mobs, mob_index, 6, dir_x, dir_z, &killed)) {
+                    BgStack drops[2];
+                    const int drop_count = mob_drops(killed, drops);
+                    for (int i = 0; i < drop_count; ++i) {
+                        inventory_add(app->player.inventory, drops[i].item, drops[i].count);
+                    }
+                    char message[96];
+                    snprintf(message, sizeof(message), "%s defeated", mob_name(killed));
+                    set_toast(app, message);
                 }
-                char message[96];
-                snprintf(message, sizeof(message), "%s defeated", mob_name(killed));
-                set_toast(app, message);
             }
         } else {
-            int bx = 0, by = 0, bz = 0;
-            BlockId type = BG_AIR;
-            int normal[3] = { 0, 0, 0 };
-            if (player_raycast(&app->player, &app->world, 6.0f, &bx, &by, &bz, &type,
-                               normal) &&
-                block_breakable(type)) {
-                world_set_block(&app->world, bx, by, bz, BG_AIR);
-                remesh_near(app, bx, by, bz);
-                uint16_t drop_item = BG_AIR;
-                int drop_amount = 0;
-                if (block_drop(type, &drop_item, &drop_amount)) {
-                    inventory_add(app->player.inventory, drop_item, drop_amount);
-                }
-            }
+            mine_tick(app, dt);
         }
+    } else {
+        app->mine_progress = 0.0f;
     }
+
     if (app->input.mouse[1]) {
         BgStack *held = &app->player.inventory[app->player.selected];
         BlockId block = BG_AIR;
@@ -1089,8 +1775,11 @@ int main(void) {
     memset(&g_app, 0, sizeof(g_app));
     g_app.state = STATE_TITLE;
     g_app.menu_choice = 1;
+    g_app.world_choice = 0;
+    g_app.active_world = -1;
     g_app.create_dimension = BG_UPPERWORLD;
-    strcpy(g_app.seed_text, "1337");
+    snprintf(g_app.name_text, sizeof(g_app.name_text), "My World");
+    snprintf(g_app.seed_text, sizeof(g_app.seed_text), "1337");
     g_app.width = 1280;
     g_app.height = 720;
     g_app.last_cx = 0x7FFFFFF;
@@ -1108,12 +1797,10 @@ int main(void) {
         return 1;
     }
 
-    FILE *existing = fopen(SAVE_PATH, "rb");
-    if (existing) {
-        fclose(existing);
-        g_app.has_save = true;
-        g_app.menu_choice = 0;
-    }
+    ensure_world_dir();
+    worlds_read_index(&g_app);
+    worlds_import_legacy(&g_app);
+    g_app.menu_choice = g_app.world_count > 0 ? 0 : 1;
 
     glfwSetKeyCallback(window, on_key);
     glfwSetCharCallback(window, on_char);
@@ -1134,9 +1821,14 @@ int main(void) {
             dt = 0.1f;
         }
         g_app.time += dt;
+        if (g_app.toast_timer > 0.0f) {
+            g_app.toast_timer -= dt;
+        }
 
         if (g_app.state == STATE_TITLE) {
             handle_title_input(&g_app, window);
+        } else if (g_app.state == STATE_WORLDS) {
+            handle_worlds_input(&g_app, window);
         } else if (g_app.state == STATE_CREATE) {
             handle_create_input(&g_app, window);
         } else if (g_app.state == STATE_LOADING) {
@@ -1152,6 +1844,8 @@ int main(void) {
 
         if (g_app.state == STATE_TITLE) {
             render_title(&g_app);
+        } else if (g_app.state == STATE_WORLDS) {
+            render_worlds(&g_app);
         } else if (g_app.state == STATE_CREATE) {
             render_create(&g_app);
         } else if (g_app.state == STATE_LOADING) {
@@ -1159,9 +1853,10 @@ int main(void) {
         } else {
             draw_world(&g_app);
             renderer_draw_hud(&g_app.renderer, &g_app.player);
+            render_mining(&g_app);
             render_toast(&g_app);
-            if (g_app.show_crafting) {
-                render_crafting(&g_app);
+            if (g_app.show_inventory) {
+                render_inventory(&g_app);
             }
             if (g_app.state == STATE_PAUSED) {
                 render_pause(&g_app);

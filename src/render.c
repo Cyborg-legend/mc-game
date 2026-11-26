@@ -506,7 +506,7 @@ static unsigned char g_atlas_pixels[ATLAS_WIDTH * ATLAS_HEIGHT * 4];
 /* Items are not blocks, so they get their own 32x32 tiles: an 8x8 pixel-art
  * sprite scaled 4x with a transparent background the hotbar lets through. */
 #define ITEM_TILE_BASE 32
-#define ITEM_TILE_COUNT 4
+#define ITEM_TILE_COUNT 7
 
 typedef struct {
     const char *rows[8];
@@ -533,6 +533,21 @@ static const ItemArt kItemArt[ITEM_TILE_COUNT] = {
         { "..111...", ".12421..", ".122221.", ".122221.",
           "..12221.", ".3322...", "333.....", "33......" },
         { { 116,  30,  30 }, { 196,  64,  64 }, { 232, 226, 204 }, { 226, 120, 110 } }
+    },
+    {   /* wooden pickaxe */
+        { "..1221..", ".1....21", "12..11.2", "...33...",
+          "...34...", "...34...", "...34...", "...34..." },
+        { { 150, 116,  72 }, { 200, 166, 108 }, { 108,  80,  46 }, { 146, 112,  68 } }
+    },
+    {   /* stone pickaxe */
+        { "..1221..", ".1....21", "12..11.2", "...33...",
+          "...34...", "...34...", "...34...", "...34..." },
+        { { 118, 118, 124 }, { 178, 178, 184 }, { 108,  80,  46 }, { 146, 112,  68 } }
+    },
+    {   /* ember pickaxe */
+        { "..1221..", ".1....21", "12..11.2", "...33...",
+          "...34...", "...34...", "...34...", "...34..." },
+        { { 196,  84,  30 }, { 255, 206, 120 }, { 108,  80,  46 }, { 146, 112,  68 } }
     }
 };
 
@@ -1269,8 +1284,8 @@ static int item_icon_tile(uint16_t item) {
 
 /* Samples the atlas (8x8 cells) so the hotbar shows the same pixels the world
  * does, with the transparent corners of item sprites left alone. */
-static void draw_item_icon(BgUi *ui, uint16_t item, float x, float y, float size,
-                           float alpha) {
+void ui_draw_item_icon(BgUi *ui, float x, float y, float size, uint16_t item,
+                       float alpha) {
     const int tile = item_icon_tile(item);
     if (tile < 0) {
         float rgb[3] = { 0.30f, 0.30f, 0.32f };
@@ -1343,6 +1358,12 @@ static void draw_heart(BgUi *ui, float x, float y, float pixel, bool full) {
     }
 }
 
+void ui_draw_hearts(BgUi *ui, float x, float y, float pixel, int health, int hearts) {
+    for (int i = 0; i < hearts; ++i) {
+        draw_heart(ui, x + (float)i * pixel * 10.0f, y, pixel, health > i * 2);
+    }
+}
+
 void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
     int width = 1280;
     int height = 720;
@@ -1381,7 +1402,7 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
 
         const BgStack *stack = &player->inventory[i];
         if (stack->count > 0) {
-            draw_item_icon(&ui, stack->item, x + 4.0f, bar_y + 4.0f, slot - 8.0f, 0.98f);
+            ui_draw_item_icon(&ui, x + 4.0f, bar_y + 4.0f, slot - 8.0f, stack->item, 0.98f);
         }
         if (selected) {
             const float frame[4] = { 0.98f, 0.98f, 0.94f, 0.95f };
@@ -1402,10 +1423,7 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
         }
     }
 
-    for (int i = 0; i < 10; ++i) {
-        draw_heart(&ui, bar_x + (float)i * 20.0f, bar_y - 30.0f, 2.0f,
-                   player->health > i * 2);
-    }
+    ui_draw_hearts(&ui, bar_x, bar_y - 30.0f, 2.0f, player->health, 10);
 
     const BgStack *held = &player->inventory[player->selected];
     if (held->count > 0) {

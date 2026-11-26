@@ -145,6 +145,9 @@ typedef enum {
     BG_ITEM_EMBER_SHARD,
     BG_ITEM_ASH_DUST,
     BG_ITEM_MEAT,
+    BG_ITEM_WOOD_PICK,
+    BG_ITEM_STONE_PICK,
+    BG_ITEM_EMBER_PICK,
     BG_ITEM_COUNT
 } ItemId;
 
@@ -158,6 +161,19 @@ bool item_block(uint16_t item, BlockId *block);
 
 /* What breaking a block puts in the inventory; false when it drops nothing. */
 bool block_drop(BlockId block, uint16_t *item, int *count);
+
+/* ---- Tools ----------------------------------------------------------- */
+
+/* Mining tiers: 0 is bare hands, pickaxes are 1 (wood), 2 (stone), 3 (ember).
+ * A block with a tier requirement above the held pick's tier cannot be mined. */
+int item_pick_tier(uint16_t item);
+int block_pick_tier(BlockId block);
+
+/* Seconds a block takes at bare-hand speed; 0 for blocks that never break. */
+float block_hardness(BlockId block);
+
+/* How much faster than bare hands the held pick is; 1.0 when it is no pick. */
+float item_pick_speed(uint16_t item);
 
 int inventory_count(const BgStack *slots, uint16_t item);
 bool inventory_add(BgStack *slots, uint16_t item, int count);
@@ -272,7 +288,8 @@ typedef struct BgInput {
     bool keys[INPUT_KEY_COUNT];
     int16_t mouse_dx;
     int16_t mouse_dy;
-    bool mouse[5];
+    bool mouse[5];      /* pressed since the last frame */
+    bool mouse_held[5]; /* still down, for held-to-mine */
 } BgInput;
 
 struct BgPlayer {

@@ -49,11 +49,13 @@ void player_init(BgPlayer *player) {
     player->selected = 0;
     player->invuln = 0.0f;
 
-    /* A small starter kit: enough timber to reach a crafting table, then
-     * everything else has to be gathered. */
+    /* A small starter kit: enough timber to reach a crafting table, and a
+     * wooden pick so the first stone is not a dead end. Everything better has
+     * to be gathered and crafted. */
     inventory_clear(player->inventory);
     inventory_add(player->inventory, BG_PLANKS, 12);
     inventory_add(player->inventory, BG_ITEM_STICK, 6);
+    inventory_add(player->inventory, BG_ITEM_WOOD_PICK, 1);
 }
 
 void player_update(BgPlayer *player, float dt, const BgInput *input, const World *world) {

@@ -23,6 +23,9 @@ const char *item_name(uint16_t item) {
         case BG_ITEM_EMBER_SHARD: return "Ember Shard";
         case BG_ITEM_ASH_DUST:    return "Ash Dust";
         case BG_ITEM_MEAT:        return "Meat";
+        case BG_ITEM_WOOD_PICK:   return "Wooden Pickaxe";
+        case BG_ITEM_STONE_PICK:  return "Stone Pickaxe";
+        case BG_ITEM_EMBER_PICK:  return "Ember Pickaxe";
         default:                  return "Unknown";
     }
 }
@@ -78,6 +81,99 @@ bool block_drop(BlockId block, uint16_t *item, int *count) {
         *count = amount;
     }
     return true;
+}
+
+/* --------------------------------------------------------------- tools */
+
+int item_pick_tier(uint16_t item) {
+    switch (item) {
+        case BG_ITEM_WOOD_PICK:  return 1;
+        case BG_ITEM_STONE_PICK: return 2;
+        case BG_ITEM_EMBER_PICK: return 3;
+        default:                 return 0;
+    }
+}
+
+/* Stone and anything fired or mortared needs a pick; the deep ores and the
+ * rift's own voidstone need a stone pick or better. */
+int block_pick_tier(BlockId block) {
+    switch (block) {
+        case BG_STONE:
+        case BG_BRICK:
+        case BG_EMBERSTONE:
+        case BG_CINDERBRICK:
+        case BG_CINDERSTONE:
+        case BG_PALE_QUARTZ:
+        case BG_LUMENSTONE:
+        case BG_MAGMA:
+            return 1;
+        case BG_IRONLODE:
+        case BG_EMBERLODE:
+        case BG_VOIDSTONE:
+            return 2;
+        default:
+            return 0;
+    }
+}
+
+float block_hardness(BlockId block) {
+    switch (block) {
+        case BG_AIR:
+        case BG_WATER:
+        case BG_BEDROCK:
+            return 0.0f;
+        case BG_LEAVES:
+        case BG_BLOODLEAVES:
+        case BG_PORTAL:
+            return 0.25f;
+        case BG_GLOWMOSS:
+            return 0.40f;
+        case BG_DIRT:
+        case BG_GRASS:
+        case BG_SAND:
+        case BG_ASHSOIL:
+        case BG_ASHBLOCK:
+            return 0.45f;
+        case BG_PLANKS:
+        case BG_STICKS:
+        case BG_CRAFTING_TABLE:
+            return 1.00f;
+        case BG_BRICK:
+            return 1.10f;
+        case BG_PALE_QUARTZ:
+            return 1.20f;
+        case BG_LUMENSTONE:
+            return 1.30f;
+        case BG_CINDERBRICK:
+        case BG_CINDERSTONE:
+            return 1.40f;
+        case BG_STONE:
+            return 1.50f;
+        case BG_MAGMA:
+            return 1.60f;
+        case BG_WOOD:
+        case BG_CRIMSON_WOOD:
+            return 1.70f;
+        case BG_EMBERSTONE:
+            return 1.80f;
+        case BG_IRONLODE:
+            return 2.20f;
+        case BG_EMBERLODE:
+            return 2.50f;
+        case BG_VOIDSTONE:
+            return 2.80f;
+        default:
+            return 1.00f;
+    }
+}
+
+float item_pick_speed(uint16_t item) {
+    switch (item_pick_tier(item)) {
+        case 1:  return 2.2f;
+        case 2:  return 4.0f;
+        case 3:  return 6.5f;
+        default: return 1.0f;
+    }
 }
 
 /* ----------------------------------------------------------- inventory */
@@ -185,6 +281,18 @@ static const BgRecipe kRecipes[] = {
     {
         { { BG_ITEM_MEAT, 2 }, { BG_ITEM_ASH_DUST, 1 } }, 2,
         { BG_GLOWMOSS, 1 }, true
+    },
+    {
+        { { BG_PLANKS, 3 }, { BG_ITEM_STICK, 2 } }, 2,
+        { BG_ITEM_WOOD_PICK, 1 }, true
+    },
+    {
+        { { BG_STONE, 3 }, { BG_ITEM_STICK, 2 } }, 2,
+        { BG_ITEM_STONE_PICK, 1 }, true
+    },
+    {
+        { { BG_ITEM_EMBER_SHARD, 3 }, { BG_ITEM_STICK, 2 } }, 2,
+        { BG_ITEM_EMBER_PICK, 1 }, true
     }
 };
 
