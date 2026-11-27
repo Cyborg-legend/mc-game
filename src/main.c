@@ -3201,6 +3201,25 @@ static void open_chest_at(App *app, int x, int y, int z, GLFWwindow *window) {
     set_cursor_captured(window, false);
 }
 
+/* The Emberheart only answers in the deep: struck against a rift frame it
+ * opens a way into the Cinderhold. Kept apart from the input loop so the
+ * right click's own path can be driven headlessly. */
+static void strike_emberheart(App *app, bool looking, BlockId looked, int bx, int by, int bz) {
+    if (app->world.dimension != BG_UNDERWORLD) {
+        set_toast(app, "The Emberheart is quiet outside the deep.");
+    } else if (!looking || looked != BG_VOIDSTONE) {
+        set_toast(app, "Strike the Emberheart against a voidstone frame.");
+    } else if (cinder_gate_open(&app->world, bx, by, bz)) {
+        app->world.cinder_open = true;
+        remesh_near(app, bx, by, bz);
+        audio_play(BG_SOUND_RIFT);
+        set_toast(app, "The frame drinks the fire. The Cinderhold is open.");
+        save_active_world(app);
+    } else {
+        set_toast(app, "A gate needs a 4x5 voidstone frame, hollow in the middle.");
+    }
+}
+
 static void update_playing(App *app, float dt, GLFWwindow *window) {
     if (key_pressed(app, GLFW_KEY_F3)) {
         app->show_debug = !app->show_debug;
@@ -3352,21 +3371,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                 audio_play(BG_SOUND_PLACE);
             }
         } else if (held->count > 0 && held->item == BG_ITEM_EMBERHEART) {
-            /* The Emberheart only answers in the deep: struck against a rift
-             * frame it opens a way into the Cinderhold. */
-            if (app->world.dimension != BG_UNDERWORLD) {
-                set_toast(app, "The Emberheart is quiet outside the deep.");
-            } else if (!looking || looked != BG_VOIDSTONE) {
-                set_toast(app, "Strike the Emberheart against a voidstone frame.");
-            } else if (cinder_gate_open(&app->world, bx, by, bz)) {
-                app->world.cinder_open = true;
-                remesh_near(app, bx, by, bz);
-                audio_play(BG_SOUND_RIFT);
-                set_toast(app, "The frame drinks the fire. The Cinderhold is open.");
-                save_active_world(app);
-            } else {
-                set_toast(app, "A gate needs a 4x5 voidstone frame, hollow in the middle.");
-            }
+            strike_emberheart(app, looking, looked, bx, by, bz);
         } else if (held->count > 0 && held->item == BG_ITEM_EMBER_SHARD) {
             /* An ember shard struck against a voidstone frame lights the rift. */
             if (looking && looked == BG_VOIDSTONE) {
