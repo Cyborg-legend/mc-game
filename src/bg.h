@@ -304,6 +304,8 @@ typedef struct BgMob {
     int health;
     float hurt_timer;
     float attack_timer;
+    /* Crouched before a floor slam lands; the player can step clear of it. */
+    float windup;
     float wander_timer;
     float wander_yaw;
 } BgMob;

@@ -31,6 +31,8 @@
 #define DEFAULT_FOV 1.2217305f
 #define DAY_LENGTH 600.0f
 #define AUTOSAVE_SECONDS 120.0f
+#define BFC_VERSION "1.0.0"
+#define DEATH_SECONDS 2.6f
 #define SETTINGS_PATH "worlds/settings.cfg"
 
 typedef enum {
@@ -100,6 +102,9 @@ typedef struct App {
     bool show_debug;
     float fps;
     float autosave_timer;
+    /* Counts down while the death card is up; the world is frozen until it
+     * reaches zero and the player comes back. */
+    float death_timer;
     int settings_choice;
 
     /* Loose items, a stack held on the inventory cursor, and the open chest. */
@@ -118,6 +123,8 @@ static App g_app;
 
 static void stream_around_player(App *app);
 static void quest_objective(const App *app, char *out, size_t size);
+static void save_active_world(App *app);
+static void set_cursor_captured(GLFWwindow *window, bool captured);
 
 /* ------------------------------------------------------------- callbacks */
 
@@ -133,6 +140,22 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action, int mo
     } else if (action == GLFW_RELEASE) {
         g_app.input.keys[key] = false;
     }
+}
+
+/* Losing the window must never cost the player a hit: the game pauses and
+ * the world is written out, so an alt-tab is always a safe place to stop. */
+static void on_focus(GLFWwindow *window, int focused) {
+    if (focused || g_app.state != STATE_PLAYING) {
+        return;
+    }
+    g_app.state = STATE_PAUSED;
+    g_app.pause_choice = 0;
+    g_app.show_inventory = false;
+    g_app.open_chest = -1;
+    g_app.mine_progress = 0.0f;
+    g_app.autosave_timer = 0.0f;
+    save_active_world(&g_app);
+    set_cursor_captured(window, false);
 }
 
 static void on_char(GLFWwindow *window, unsigned int codepoint) {
@@ -1141,7 +1164,22 @@ static void carry_pack(BgPlayer *to, const BgPlayer *from) {
     to->health = from->health;
 }
 
+/* The world stops for a moment so a death reads as an event rather than a
+ * teleport; respawn does the actual recovery when the card expires. */
+static void begin_death(App *app) {
+    if (app->death_timer > 0.0f || app->player.health > 0) {
+        return;
+    }
+    app->death_timer = DEATH_SECONDS;
+    app->show_inventory = false;
+    app->open_chest = -1;
+    app->mine_progress = 0.0f;
+    app->autosave_timer = 0.0f;
+    audio_play(BG_SOUND_HURT);
+}
+
 static void respawn(App *app) {
+    app->death_timer = 0.0f;
     app->player.health = 20;
     app->player.invuln = 1.5f;
     app->player.vx = app->player.vy = app->player.vz = 0.0f;
@@ -2058,6 +2096,36 @@ static void render_debug(App *app) {
     ui_text(&ui, 20.0f, 92.0f, 1.5f, objective, quest_color);
     ui_text(&ui, 20.0f, 112.0f, 1.4f, "F3 HIDES THIS OVERLAY",
             (float[4]){ 0.60f, 0.66f, 0.62f, 1.0f });
+
+    renderer_draw_ui(&app->renderer, &ui);
+    ui_free(&ui);
+}
+
+static void render_death(App *app) {
+    BgUi ui;
+    memset(&ui, 0, sizeof(ui));
+    const float width = (float)app->width;
+    const float height = (float)app->height;
+
+    const float dim[4] = { 0.10f, 0.02f, 0.02f, 0.58f };
+    ui_rect(&ui, 0.0f, 0.0f, width, height, dim);
+
+    const float title[4] = { 0.94f, 0.28f, 0.22f, 1.0f };
+    const float soft[4] = { 0.88f, 0.84f, 0.82f, 0.92f };
+    draw_shadowed_centered(&ui, width * 0.5f, height * 0.38f, 6.0f, "YOU DIED", title);
+
+    const char *claim = "THE WILDERNESS TAKES YOU";
+    if (app->world.dimension == BG_UNDERWORLD) {
+        claim = "THE DEEP CLAIMS YOU";
+    } else if (app->world.dimension == BG_CINDERHOLD) {
+        claim = "THE CINDERHOLD CLAIMS YOU";
+    }
+    ui_text_centered(&ui, width * 0.5f, height * 0.50f, 2.2f, claim, soft);
+
+    char note[96];
+    snprintf(note, sizeof(note), "THE PACK COMES BACK WITH YOU IN %d",
+             (int)(app->death_timer + 0.99f));
+    ui_text_centered(&ui, width * 0.5f, height * 0.57f, 1.6f, note, soft);
 
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
@@ -3254,6 +3322,15 @@ static void strike_emberheart(App *app, bool looking, BlockId looked, int bx, in
 }
 
 static void update_playing(App *app, float dt, GLFWwindow *window) {
+    /* Dead: the world is frozen under the card until the timer runs out. */
+    if (app->death_timer > 0.0f) {
+        app->death_timer -= dt;
+        if (app->death_timer <= 0.0f) {
+            respawn(app);
+        }
+        return;
+    }
+
     if (key_pressed(app, GLFW_KEY_F3)) {
         app->show_debug = !app->show_debug;
     }
@@ -3263,7 +3340,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         mobs_update(&app->mobs, &app->world, &app->player, dt);
         drops_update(app->drops, &app->drop_count, &app->world, &app->player, dt);
         if (app->player.health <= 0) {
-            respawn(app);
+            begin_death(app);
         }
         return;
     }
@@ -3298,7 +3375,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
             audio_play(BG_SOUND_HURT);
         }
         if (app->player.health <= 0) {
-            respawn(app);
+            begin_death(app);
         }
         return;
     }
@@ -3519,7 +3596,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
     }
 
     if (app->player.health <= 0) {
-        respawn(app);
+        begin_death(app);
     }
 }
 
@@ -3555,7 +3632,7 @@ int main(void) {
 #endif
     glfwWindowHint(GLFW_SAMPLES, 4);
 
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "BlockForge", NULL, NULL);
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "BlockForge " BFC_VERSION, NULL, NULL);
     if (!window) {
         fprintf(stderr, "Failed to create a window with OpenGL 3.3\n");
         glfwTerminate();
@@ -3605,6 +3682,7 @@ int main(void) {
     glfwSetMouseButtonCallback(window, on_mouse_button);
     glfwSetCursorPosCallback(window, on_cursor);
     glfwSetFramebufferSizeCallback(window, on_framebuffer_size);
+    glfwSetWindowFocusCallback(window, on_focus);
 
     glViewport(0, 0, g_app.width, g_app.height);
 
@@ -3662,6 +3740,9 @@ int main(void) {
             renderer_draw_hud(&g_app.renderer, &g_app.player);
             render_mining(&g_app);
             render_toast(&g_app);
+            if (g_app.death_timer > 0.0f) {
+                render_death(&g_app);
+            }
             if (g_app.show_debug) {
                 render_debug(&g_app);
             }

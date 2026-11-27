@@ -451,6 +451,21 @@ static void update_sovereign(BgMob *mob, const World *world, BgPlayer *player,
     const float distance = sqrtf(dx * dx + dz * dz);
 
     if (distance < 30.0f && fabsf(player->y - mob->y) < 9.0f) {
+        /* A slam is telegraphed: the Sovereign roots itself and crouches for
+         * most of a second before the floor breaks, so the ring can be left. */
+        if (mob->windup > 0.0f) {
+            move_ground_mob(mob, world, 0.0f, 0.0f, 0.0f, dt);
+            mob->windup -= dt;
+            if (mob->windup <= 0.0f) {
+                mob->windup = 0.0f;
+                if (distance < 13.0f && player->invuln <= 0.0f) {
+                    player->health -= 4;
+                    player->invuln = 0.65f;
+                }
+            }
+            return;
+        }
+
         if (distance > 2.0f) {
             const float inv = 1.0f / distance;
             move_ground_mob(mob, world, dx * inv, dz * inv,
@@ -462,9 +477,8 @@ static void update_sovereign(BgMob *mob, const World *world, BgPlayer *player,
         mob->wander_timer -= dt;
         if (mob->wander_timer <= 0.0f) {
             mob->wander_timer = 5.5f;
-            if (distance < 13.0f && player->invuln <= 0.0f) {
-                player->health -= 4;
-                player->invuln = 0.65f;
+            if (distance < 13.0f) {
+                mob->windup = 0.8f;
             }
         }
         return;
