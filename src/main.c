@@ -533,13 +533,38 @@ static void ensure_world_dir(void) {
 #endif
 }
 
+#define REALM_COUNT 3
+static const Dimension kRealms[REALM_COUNT] = { BG_UPPERWORLD, BG_UNDERWORLD, BG_CINDERHOLD };
+
+static int dimension_top(Dimension dimension) {
+    switch (dimension) {
+        case BG_UPPERWORLD: return UPPERWORLD_TOP;
+        case BG_CINDERHOLD: return CINDERHOLD_TOP;
+        default:            return UNDERWORLD_TOP;
+    }
+}
+
+static const char *dimension_title(Dimension dimension) {
+    switch (dimension) {
+        case BG_UNDERWORLD: return "UNDERWORLD";
+        case BG_CINDERHOLD: return "CINDERHOLD";
+        default:            return "UPPERWORLD";
+    }
+}
+
 /* Each world keeps one save per realm, so anything built on the far side of a
  * rift is still standing when the player comes back through. */
 static void world_realm_path(int id, Dimension dimension, char *out, size_t size) {
-    if (dimension == BG_UNDERWORLD) {
-        snprintf(out, size, "%s/slot_%d_under.sav", WORLD_DIR, id);
-    } else {
-        world_save_path(id, out, size);
+    switch (dimension) {
+        case BG_UNDERWORLD:
+            snprintf(out, size, "%s/slot_%d_under.sav", WORLD_DIR, id);
+            break;
+        case BG_CINDERHOLD:
+            snprintf(out, size, "%s/slot_%d_cinder.sav", WORLD_DIR, id);
+            break;
+        default:
+            world_save_path(id, out, size);
+            break;
     }
 }
 
@@ -590,8 +615,15 @@ static void worlds_read_index(App *app) {
         if (sscanf(line, "%d\t%23[^\t]\t%llu\t%d", &id, name, &seed, &dimension) < 2) {
             continue;
         }
-        /* A world whose saves both went missing is not offered any more. */
-        if (!world_file_exists(id, BG_UPPERWORLD) && !world_file_exists(id, BG_UNDERWORLD)) {
+        /* A world whose realm saves all went missing is not offered any more. */
+        bool any_save = false;
+        for (int realm = 0; realm < REALM_COUNT; ++realm) {
+            if (world_file_exists(id, kRealms[realm])) {
+                any_save = true;
+                break;
+            }
+        }
+        if (!any_save) {
             continue;
         }
 
@@ -599,7 +631,9 @@ static void worlds_read_index(App *app) {
         entry->id = id;
         snprintf(entry->name, sizeof(entry->name), "%s", name);
         entry->seed = (uint64_t)seed;
-        entry->dimension = dimension == (int)BG_UNDERWORLD ? BG_UNDERWORLD : BG_UPPERWORLD;
+        entry->dimension = (dimension >= 0 && dimension < REALM_COUNT)
+                               ? (Dimension)dimension
+                               : BG_UPPERWORLD;
     }
     fclose(file);
 }
@@ -696,10 +730,10 @@ static void delete_world(App *app, int index) {
     snprintf(name, sizeof(name), "%s", app->worlds[index].name);
 
     char path[96];
-    world_realm_path(app->worlds[index].id, BG_UPPERWORLD, path, sizeof(path));
-    remove(path);
-    world_realm_path(app->worlds[index].id, BG_UNDERWORLD, path, sizeof(path));
-    remove(path);
+    for (int realm = 0; realm < REALM_COUNT; ++realm) {
+        world_realm_path(app->worlds[index].id, kRealms[realm], path, sizeof(path));
+        remove(path);
+    }
 
     for (int i = index; i + 1 < app->world_count; ++i) {
         app->worlds[i] = app->worlds[i + 1];
@@ -775,8 +809,8 @@ static void world_copy(App *app, int index) {
     const int source_id = app->worlds[index].id;
     const int new_id = worlds_next_id(app);
     int copied = 0;
-    for (int realm = 0; realm < 2; ++realm) {
-        const Dimension dimension = realm == 1 ? BG_UNDERWORLD : BG_UPPERWORLD;
+    for (int realm = 0; realm < REALM_COUNT; ++realm) {
+        const Dimension dimension = kRealms[realm];
         char source[96];
         char target[96];
         world_realm_path(source_id, dimension, source, sizeof(source));
@@ -822,7 +856,7 @@ static void world_export(App *app, int index) {
         return;
     }
 
-    const char magic[8] = { 'B', 'F', 'B', 'U', 'N', 'D', 'L', '1' };
+    const char magic[8] = { 'B', 'F', 'B', 'U', 'N', 'D', 'L', '2' };
     char name[24] = { 0 };
     snprintf(name, sizeof(name), "%s", app->worlds[index].name);
     const uint64_t seed = app->worlds[index].seed;
@@ -832,10 +866,9 @@ static void world_export(App *app, int index) {
     fwrite(&seed, sizeof(seed), 1, out);
     fwrite(&dimension, sizeof(dimension), 1, out);
 
-    for (int realm = 0; realm < 2; ++realm) {
+    for (int realm = 0; realm < REALM_COUNT; ++realm) {
         char realm_path[96];
-        world_realm_path(app->worlds[index].id,
-                         realm == 1 ? BG_UNDERWORLD : BG_UPPERWORLD, realm_path,
+        world_realm_path(app->worlds[index].id, kRealms[realm], realm_path,
                          sizeof(realm_path));
         FILE *in = fopen(realm_path, "rb");
         const uint8_t present = in ? 1u : 0u;
@@ -884,7 +917,7 @@ static bool world_import_bundle(App *app, const char *path) {
     uint64_t seed = 0;
     uint8_t dimension = 0;
     if (fread(magic, 1, sizeof(magic), in) != sizeof(magic) ||
-        memcmp(magic, "BFBUNDL1", 8) != 0 ||
+        (memcmp(magic, "BFBUNDL1", 8) != 0 && memcmp(magic, "BFBUNDL2", 8) != 0) ||
         fread(name, 1, sizeof(name), in) != sizeof(name) ||
         fread(&seed, sizeof(seed), 1, in) != 1 ||
         fread(&dimension, sizeof(dimension), 1, in) != 1) {
@@ -892,13 +925,15 @@ static bool world_import_bundle(App *app, const char *path) {
         return false;
     }
     name[sizeof(name) - 1] = '\0';
-    if (dimension > (uint8_t)BG_UNDERWORLD) {
+    if (dimension > (uint8_t)BG_CINDERHOLD) {
         dimension = (uint8_t)BG_UPPERWORLD;
     }
+    /* Older bundles hold two realms; the current format holds all three. */
+    const int realm_count = memcmp(magic, "BFBUNDL2", 8) == 0 ? 3 : 2;
 
     const int new_id = worlds_next_id(app);
     bool wrote_any = false;
-    for (int realm = 0; realm < 2; ++realm) {
+    for (int realm = 0; realm < realm_count; ++realm) {
         uint8_t present = 0;
         if (fread(&present, 1, 1, in) != 1) {
             break;
@@ -911,8 +946,7 @@ static bool world_import_bundle(App *app, const char *path) {
             break;
         }
         char target[96];
-        world_realm_path(new_id, realm == 1 ? BG_UNDERWORLD : BG_UPPERWORLD, target,
-                         sizeof(target));
+        world_realm_path(new_id, kRealms[realm], target, sizeof(target));
         FILE *out = fopen(target, "wb");
         if (!out) {
             break;
@@ -1055,6 +1089,25 @@ static void place_at_rift(App *app, int cx, int cy, int cz, int axis) {
     app->player.pitch = 0.0f;
 }
 
+/* The Cinderhold's gate is fixed in the arena's south wall, so the player
+ * always lands just inside the arena facing the middle of it. */
+static void place_at_cinder_gate(App *app) {
+    app->player.vx = app->player.vy = app->player.vz = 0.0f;
+    app->player.x = 0.0f;
+    app->player.y = (float)CINDERHOLD_FLOOR;
+    app->player.z = (float)CINDERHOLD_ARENA_HALF - 2.5f;
+    app->player.yaw = -1.5707963f;
+    app->player.pitch = 0.0f;
+}
+
+/* The pack, the hotbar choice and the health bar are what a realm change
+ * carries; where the player stands belongs to the realm being entered. */
+static void carry_pack(BgPlayer *to, const BgPlayer *from) {
+    memcpy(to->inventory, from->inventory, sizeof(to->inventory));
+    to->selected = from->selected;
+    to->health = from->health;
+}
+
 static void respawn(App *app) {
     app->player.health = 20;
     app->player.invuln = 1.5f;
@@ -1070,6 +1123,14 @@ static void respawn(App *app) {
         app->cursor.item = BG_AIR;
         app->cursor.count = 0;
         app->cursor.damage = 0;
+    }
+    if (app->world.dimension == BG_CINDERHOLD) {
+        place_at_cinder_gate(app);
+        set_toast(app, "The Cinderhold spits you back to its gate.");
+        mobs_clear(&app->mobs);
+        reset_streaming(app);
+        stream_around_player(app);
+        return;
     }
     if (app->world.dimension == BG_UNDERWORLD) {
         /* There is no camp in the rift realm, so the player comes to on the spot
@@ -1111,8 +1172,7 @@ static void ensure_column(App *app, int cx, int cz) {
 }
 
 static void mesh_column(App *app, int cx, int cz) {
-    const int rows = (app->world.dimension == BG_UPPERWORLD ? UPPERWORLD_TOP : UNDERWORLD_TOP)
-                     / CHUNK_SIZE;
+    const int rows = dimension_top(app->world.dimension) / CHUNK_SIZE;
     for (int cy = 0; cy < rows; ++cy) {
         Chunk *chunk = world_chunk(&app->world, cx, cy, cz, false);
         if (!chunk) {
@@ -1215,11 +1275,11 @@ static void begin_loading(App *app, Dimension dimension) {
     reset_streaming(app);
     reset_transient(app);
 
-    if (dimension == BG_UNDERWORLD) {
+    if (dimension == BG_UPPERWORLD) {
+        world_spawn_site(&app->world, &app->loading_center_x, &app->loading_center_z);
+    } else {
         app->loading_center_x = 0;
         app->loading_center_z = 0;
-    } else {
-        world_spawn_site(&app->world, &app->loading_center_x, &app->loading_center_z);
     }
     app->loading_dimension = dimension;
     app->loading_radius = app->render_dist + 1;
@@ -1250,16 +1310,7 @@ static void update_loading(App *app, GLFWwindow *window) {
     }
 
     app->loading = false;
-    if (app->loading_dimension == BG_UNDERWORLD) {
-        /* Arriving in the rift realm means the twin gate came along; it is also
-         * the only way back out of a world that starts here. */
-        int surface = world_surface_y(&app->world, 0, 0);
-        if (surface < 2) {
-            surface = 60;
-        }
-        rift_build(&app->world, 0, surface, 0, 0);
-        place_at_rift(app, 0, surface, 0, 0);
-    } else {
+    if (app->loading_dimension == BG_UPPERWORLD) {
         app->player.x = (float)app->loading_center_x + 0.5f;
         app->player.z = (float)app->loading_center_z + 0.5f;
         app->player.y = (float)world_surface_y(&app->world, app->loading_center_x,
@@ -1269,6 +1320,19 @@ static void update_loading(App *app, GLFWwindow *window) {
         }
         app->player.yaw = 1.5707963f;
         app->player.pitch = 0.0f;
+    } else if (app->loading_dimension == BG_CINDERHOLD) {
+        cinderhold_build_arena(&app->world);
+        app->world.cinder_open = true;
+        place_at_cinder_gate(app);
+    } else {
+        /* Arriving in the rift realm means the twin gate came along; it is also
+         * the only way back out of a world that starts here. */
+        int surface = world_surface_y(&app->world, 0, 0);
+        if (surface < 2) {
+            surface = 60;
+        }
+        rift_build(&app->world, 0, surface, 0, 0);
+        place_at_rift(app, 0, surface, 0, 0);
     }
     app->travel_armed = false;
     mobs_clear(&app->mobs);
@@ -1312,17 +1376,22 @@ static bool load_game(App *app, GLFWwindow *window) {
 
     const int index = app->world_choice;
     char path[96];
-    world_realm_path(app->worlds[index].id, app->worlds[index].dimension, path,
-                     sizeof(path));
-    if (!load_world(path, &app->world, &app->player)) {
-        /* The other side of the rift may be the only one saved. */
-        const Dimension other = app->worlds[index].dimension == BG_UNDERWORLD
-                                    ? BG_UPPERWORLD
-                                    : BG_UNDERWORLD;
-        world_realm_path(app->worlds[index].id, other, path, sizeof(path));
-        if (!load_world(path, &app->world, &app->player)) {
-            return false;
+    const int realm_id = app->worlds[index].id;
+    const Dimension listed = app->worlds[index].dimension;
+    world_realm_path(realm_id, listed, path, sizeof(path));
+    bool restored = load_world(path, &app->world, &app->player) &&
+                    app->world.dimension == listed;
+    /* Another realm may be the only one saved (or the listed one is gone). */
+    for (int realm = 0; !restored && realm < REALM_COUNT; ++realm) {
+        if (kRealms[realm] == listed) {
+            continue;
         }
+        world_realm_path(realm_id, kRealms[realm], path, sizeof(path));
+        restored = load_world(path, &app->world, &app->player) &&
+                   app->world.dimension == kRealms[realm];
+    }
+    if (!restored) {
+        return false;
     }
 
     app->active_world = index;
@@ -1377,9 +1446,17 @@ static void travel(App *app) {
          * you just carried through the gate. */
         app->player = carried;
     } else {
+        /* A realm is being seen for the first time: keep the quest and the
+         * clock, which belong to the world rather than to one side of it. */
+        const uint8_t quest = app->world.quest_stage;
+        const bool boss = app->world.boss_defeated;
+        const float clock = app->world.time_of_day;
         world_clear(&app->world);
         world_set_dimension(&app->world, next);
         world_set_seed(&app->world, seed);
+        app->world.quest_stage = quest;
+        app->world.boss_defeated = boss;
+        app->world.time_of_day = clock;
         world_generate_around(&app->world, cx / CHUNK_SIZE, cz / CHUNK_SIZE,
                               app->render_dist + 1);
     }
@@ -1396,6 +1473,128 @@ static void travel(App *app) {
     save_active_world(app);
     set_toast(app, next == BG_UNDERWORLD ? "The Underworld swallows you."
                                         : "You step back into the open.");
+}
+
+/* The Emberheart's gate always opens onto the arena's own gate, so a fresh
+ * Cinderhold is built around it and a saved one is restored as it was. */
+static void travel_to_cinderhold(App *app) {
+    const BgPlayer carried = app->player;
+    const uint64_t seed = app->world.seed;
+    save_active_world(app);
+
+    bool restored = false;
+    const int id = active_world_id(app);
+    if (id >= 0) {
+        char path[96];
+        world_realm_path(id, BG_CINDERHOLD, path, sizeof(path));
+        restored = load_world(path, &app->world, &app->player) &&
+                   app->world.dimension == BG_CINDERHOLD;
+    }
+    if (restored) {
+        carry_pack(&app->player, &carried);
+    } else {
+        const uint8_t quest = app->world.quest_stage;
+        const bool boss = app->world.boss_defeated;
+        const float clock = app->world.time_of_day;
+        world_clear(&app->world);
+        world_set_dimension(&app->world, BG_CINDERHOLD);
+        world_set_seed(&app->world, seed);
+        app->world.quest_stage = quest;
+        app->world.boss_defeated = boss;
+        app->world.time_of_day = clock;
+        app->world.cinder_open = true;
+        world_generate_around(&app->world, 0, 0, app->render_dist + 1);
+        cinderhold_build_arena(&app->world);
+    }
+
+    renderer_set_environment(&app->renderer, BG_CINDERHOLD);
+    reset_streaming(app);
+    reset_transient(app);
+    place_at_cinder_gate(app);
+    app->world.cinder_open = true;
+    app->travel_armed = false;
+    mobs_clear(&app->mobs);
+    stream_around_player(app);
+    save_active_world(app);
+    set_toast(app, "The Cinderhold closes around you.");
+}
+
+/* Stepping back through the arena gate returns to the Underworld, landing
+ * beside the frame the Emberheart was struck against. */
+/* True when the frame in front of the player already burns with the
+ * Emberheart's own fire, which must not be paved over with a rift portal. */
+static bool frame_has_cinder_gate(const World *world, int cx, int cy, int cz, int axis) {
+    for (int iy = 1; iy <= 3; ++iy) {
+        for (int id = 1; id <= 2; ++id) {
+            const int bx = axis == 0 ? cx + id : cx;
+            const int bz = axis == 0 ? cz : cz + id;
+            if (block_cinder_gate(world_get_block(world, bx, cy + iy, bz))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void travel_from_cinderhold(App *app) {
+    const BgPlayer carried = app->player;
+    const uint64_t seed = app->world.seed;
+    const uint8_t quest = app->world.quest_stage;
+    const bool boss = app->world.boss_defeated;
+    const float clock = app->world.time_of_day;
+    save_active_world(app);
+
+    bool restored = false;
+    const int id = active_world_id(app);
+    if (id >= 0) {
+        char path[96];
+        world_realm_path(id, BG_UNDERWORLD, path, sizeof(path));
+        restored = load_world(path, &app->world, &app->player) &&
+                   app->world.dimension == BG_UNDERWORLD;
+    }
+    if (restored) {
+        carry_pack(&app->player, &carried);
+        /* The save holds the spot on the gate they left from. */
+        int cx = 0;
+        int cy = 0;
+        int cz = 0;
+        int axis = 0;
+        const int px = (int)floorf(app->player.x);
+        const int py = (int)floorf(app->player.y);
+        const int pz = (int)floorf(app->player.z);
+        if (rift_frame_at(&app->world, px, py, pz, &cx, &cy, &cz, &axis) ||
+            rift_frame_at(&app->world, px, py + 1, pz, &cx, &cy, &cz, &axis)) {
+            /* The gate they made is left burning; only an ordinary rift frame
+             * is rebuilt, which also clears a landing space beside it. */
+            if (!frame_has_cinder_gate(&app->world, cx, cy, cz, axis)) {
+                rift_build(&app->world, cx, cy, cz, axis);
+            }
+            place_at_rift(app, cx, cy, cz, axis);
+        }
+    } else {
+        world_clear(&app->world);
+        world_set_dimension(&app->world, BG_UNDERWORLD);
+        world_set_seed(&app->world, seed);
+        app->world.quest_stage = quest;
+        app->world.boss_defeated = boss;
+        app->world.time_of_day = clock;
+        world_generate_around(&app->world, 0, 0, app->render_dist + 1);
+        int surface = world_surface_y(&app->world, 0, 0);
+        if (surface < 2) {
+            surface = 60;
+        }
+        rift_build(&app->world, 0, surface, 0, 0);
+        place_at_rift(app, 0, surface, 0, 0);
+    }
+
+    renderer_set_environment(&app->renderer, BG_UNDERWORLD);
+    reset_streaming(app);
+    reset_transient(app);
+    app->travel_armed = false;
+    mobs_clear(&app->mobs);
+    stream_around_player(app);
+    save_active_world(app);
+    set_toast(app, "You step back into the Underworld.");
 }
 
 static void save_and_title(App *app, GLFWwindow *window) {
@@ -1773,6 +1972,9 @@ static void render_ending(App *app) {
     const float soft[4] = { 0.90f, 0.90f, 0.94f, 0.95f };
     draw_shadowed_centered(&ui, width * 0.5f, height * 0.42f, 2.2f,
                            "THE CINDER ALPHA HAS FALLEN AND BOTH REALMS REMEMBER YOU.", soft);
+    ui_text_centered(&ui, width * 0.5f, height * 0.455f, 1.5f,
+                     "STRIKE THE EMBERHEART ON A RIFT FRAME BELOW TO OPEN THE CINDERHOLD.",
+                     title);
 
     char stats[128];
     snprintf(stats, sizeof(stats), "%s   %d CHUNKS        SEED %llu",
@@ -1804,7 +2006,14 @@ static void render_debug(App *app) {
              app->drop_count, (unsigned long long)app->world.seed);
 
     char objective[128];
-    quest_objective(app, objective, sizeof(objective));
+    if (app->world.dimension == BG_CINDERHOLD) {
+        snprintf(objective, sizeof(objective), "%s",
+                 app->world.cinder_boss_defeated
+                     ? "THE CINDERHOLD  -  THE SOVEREIGN FALLS"
+                     : "THE CINDERHOLD  -  SLAY THE CINDER SOVEREIGN");
+    } else {
+        quest_objective(app, objective, sizeof(objective));
+    }
 
     const float back[4] = { 0.02f, 0.02f, 0.03f, 0.62f };
     ui_rect(&ui, 10.0f, 10.0f, 470.0f, 132.0f, back);
@@ -1869,7 +2078,13 @@ static void quest_objective(const App *app, char *out, size_t size) {
             snprintf(out, size, "THE EMBERHEART  -  CARRY IT BACK THROUGH THE RIFT");
             break;
         default:
-            snprintf(out, size, "THE EMBERHEART  -  YOURS");
+            if (!app->world.cinder_open) {
+                snprintf(out, size, "THE EMBERHEART  -  STRIKE IT ON A RIFT FRAME BELOW");
+            } else if (!app->world.cinder_boss_defeated) {
+                snprintf(out, size, "THE EMBERHEART  -  THE CINDERHOLD AWAITS");
+            } else {
+                snprintf(out, size, "THE EMBERHEART  -  YOURS");
+            }
             break;
     }
 }
@@ -2467,7 +2682,7 @@ static void render_loading(App *app) {
 
     char line[96];
     snprintf(line, sizeof(line), "%d%%   %s", (int)(progress * 100.0f + 0.5f),
-             app->loading_dimension == BG_UNDERWORLD ? "UNDERWORLD" : "UPPERWORLD");
+             dimension_title(app->loading_dimension));
     const float soft[4] = { 0.86f, 0.88f, 0.92f, 0.90f };
     ui_text_centered(&ui, width * 0.5f, by + bh + 16.0f, 1.8f, line, soft);
 
@@ -2965,6 +3180,16 @@ static bool boss_alive(const App *app) {
     return false;
 }
 
+static bool sovereign_alive(const App *app) {
+    for (int i = 0; i < MAX_MOBS; ++i) {
+        if (app->mobs.mobs[i].alive &&
+            app->mobs.mobs[i].type == (uint8_t)MOB_CINDER_SOVEREIGN) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void open_chest_at(App *app, int x, int y, int z, GLFWwindow *window) {
     BgContainer *container = world_container_at(&app->world, x, y, z, true);
     if (!container) {
@@ -3056,7 +3281,8 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                     BgStack mob_drops_out[2];
                     const int drop_total = mob_drops(killed, mob_drops_out);
                     for (int i = 0; i < drop_total; ++i) {
-                        if (killed == MOB_CINDER_ALPHA) {
+                        if (killed == MOB_CINDER_ALPHA ||
+                            killed == MOB_CINDER_SOVEREIGN) {
                             inventory_add(app->player.inventory, mob_drops_out[i].item,
                                           mob_drops_out[i].count);
                         } else if (!world_drop_item(app->drops, &app->drop_count, &app->player,
@@ -3074,6 +3300,11 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                         app->world.quest_stage = 3;
                         audio_play(BG_SOUND_WIN);
                         set_toast(app, "The Cinder Alpha falls. Take the Emberheart home.");
+                    } else if (killed == MOB_CINDER_SOVEREIGN) {
+                        app->world.cinder_boss_defeated = true;
+                        save_active_world(app);
+                        audio_play(BG_SOUND_WIN);
+                        set_toast(app, "The Cinder Sovereign is unmade. The hold is quiet.");
                     } else {
                         audio_play(BG_SOUND_BREAK);
                     }
@@ -3119,6 +3350,22 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                     held->item = BG_AIR;
                 }
                 audio_play(BG_SOUND_PLACE);
+            }
+        } else if (held->count > 0 && held->item == BG_ITEM_EMBERHEART) {
+            /* The Emberheart only answers in the deep: struck against a rift
+             * frame it opens a way into the Cinderhold. */
+            if (app->world.dimension != BG_UNDERWORLD) {
+                set_toast(app, "The Emberheart is quiet outside the deep.");
+            } else if (!looking || looked != BG_VOIDSTONE) {
+                set_toast(app, "Strike the Emberheart against a voidstone frame.");
+            } else if (cinder_gate_open(&app->world, bx, by, bz)) {
+                app->world.cinder_open = true;
+                remesh_near(app, bx, by, bz);
+                audio_play(BG_SOUND_RIFT);
+                set_toast(app, "The frame drinks the fire. The Cinderhold is open.");
+                save_active_world(app);
+            } else {
+                set_toast(app, "A gate needs a 4x5 voidstone frame, hollow in the middle.");
             }
         } else if (held->count > 0 && held->item == BG_ITEM_EMBER_SHARD) {
             /* An ember shard struck against a voidstone frame lights the rift. */
@@ -3187,21 +3434,31 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
     const BlockId at_eye = world_get_block(&app->world, (int)floorf(app->player.x),
                                            (int)floorf(app->player.y + EYE_HEIGHT),
                                            (int)floorf(app->player.z));
-    if (!app->travel_armed && (block_portal(at_feet) || block_portal(at_eye))) {
+    const bool on_rift = block_portal(at_feet) || block_portal(at_eye);
+    const bool on_cinder_gate = block_cinder_gate(at_feet) || block_cinder_gate(at_eye);
+    if (!app->travel_armed && (on_rift || on_cinder_gate)) {
         app->travel_armed = true;
-        travel(app);
-        if (app->world.quest_stage == 3 && app->world.boss_defeated &&
-            app->world.dimension == BG_UPPERWORLD) {
-            app->world.quest_stage = 4;
-            save_active_world(app);
-            app->state = STATE_ENDING;
-            app->ending_timer = 0.0f;
-            app->toast_timer = 0.0f;
-            set_cursor_captured(window, false);
-            audio_play(BG_SOUND_WIN);
-            return;
+        if (on_cinder_gate) {
+            if (app->world.dimension == BG_CINDERHOLD) {
+                travel_from_cinderhold(app);
+            } else {
+                travel_to_cinderhold(app);
+            }
+        } else {
+            travel(app);
+            if (app->world.quest_stage == 3 && app->world.boss_defeated &&
+                app->world.dimension == BG_UPPERWORLD) {
+                app->world.quest_stage = 4;
+                save_active_world(app);
+                app->state = STATE_ENDING;
+                app->ending_timer = 0.0f;
+                app->toast_timer = 0.0f;
+                set_cursor_captured(window, false);
+                audio_play(BG_SOUND_WIN);
+                return;
+            }
         }
-    } else if (!block_portal(at_feet) && !block_portal(at_eye)) {
+    } else if (!on_rift && !on_cinder_gate) {
         app->travel_armed = false;
     }
 
@@ -3210,6 +3467,15 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         if (mobs_spawn_boss(&app->mobs, &app->world, app->player.x, app->player.y,
                             app->player.z)) {
             set_toast(app, "The Cinder Alpha awakens.");
+            audio_play(BG_SOUND_BOSS);
+        }
+    }
+
+    if (app->world.dimension == BG_CINDERHOLD && !app->world.cinder_boss_defeated &&
+        !sovereign_alive(app)) {
+        if (mobs_spawn_cinder_boss(&app->mobs, &app->world, 0.5f, (float)CINDERHOLD_FLOOR,
+                                   0.5f)) {
+            set_toast(app, "The Cinder Sovereign rises.");
             audio_play(BG_SOUND_BOSS);
         }
     }

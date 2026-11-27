@@ -7,7 +7,11 @@
 /* ---------------------------------------------------------------- blocks */
 
 const char *dimension_name(Dimension dimension) {
-    return dimension == BG_UNDERWORLD ? "Underworld" : "Upperworld";
+    switch (dimension) {
+        case BG_UNDERWORLD: return "Underworld";
+        case BG_CINDERHOLD: return "Cinderhold";
+        default:            return "Upperworld";
+    }
 }
 
 bool block_liquid(BlockId block) {
@@ -18,9 +22,13 @@ bool block_portal(BlockId block) {
     return block == BG_PORTAL;
 }
 
+bool block_cinder_gate(BlockId block) {
+    return block == BG_CINDER_GATE;
+}
+
 bool block_collidable(BlockId block) {
     return block != BG_AIR && block != BG_TORCH && !block_liquid(block) &&
-           !block_portal(block);
+           !block_portal(block) && !block_cinder_gate(block);
 }
 
 bool block_breakable(BlockId block) {
@@ -171,6 +179,8 @@ void world_clear(World *world) {
     world->time_of_day = 0.18f;
     world->quest_stage = 0;
     world->boss_defeated = false;
+    world->cinder_open = false;
+    world->cinder_boss_defeated = false;
 }
 
 void world_set_dimension(World *world, Dimension dimension) {
@@ -284,6 +294,7 @@ int block_light_emit(BlockId block) {
     switch (block) {
         case BG_TORCH:      return 14;
         case BG_LUMENSTONE: return 14;
+        case BG_CINDER_GATE: return 13;
         case BG_PORTAL:     return 12;
         case BG_MAGMA:      return 10;
         case BG_EMBERLODE:  return 7;
@@ -505,6 +516,146 @@ static int underworld_height(int x, int z, uint64_t seed) {
     return 62 + (int)(base * 20.0f);
 }
 
+static int cinderhold_height(int x, int z, uint64_t seed) {
+    const float base = fbm2((float)x * 0.022f, (float)z * 0.022f, seed + 211u, 4);
+    const float detail = fbm2((float)x * 0.09f, (float)z * 0.09f, seed + 223u, 2);
+    return 20 + (int)(base * 15.0f) + (int)(detail * 4.0f);
+}
+
+/* A closed cavern over a magma sea: ash flats, cinderstone walls, veins of
+ * lumenstone and emberlode, glowmoss hanging from the roof and stone spikes
+ * dropping out of it. There is no sky in here, so nothing is lit unless it
+ * glows or somebody lights it. */
+static void generate_cinderhold_chunk(World *world, Chunk *chunk) {
+    const int ox = chunk->cx * CHUNK_SIZE;
+    const int oy = chunk->cy * CHUNK_SIZE;
+    const int oz = chunk->cz * CHUNK_SIZE;
+    const int lava_level = 16;
+
+    for (int lz = 0; lz < CHUNK_SIZE; ++lz) {
+        for (int lx = 0; lx < CHUNK_SIZE; ++lx) {
+            const int wx = ox + lx;
+            const int wz = oz + lz;
+            const int surface = cinderhold_height(wx, wz, world->seed);
+            const float spike = value_noise2((float)wx * 0.17f, (float)wz * 0.17f,
+                                             world->seed + 307u);
+            const int spike_len = spike > 0.60f ? (int)((spike - 0.60f) * 42.0f) : 0;
+
+            for (int ly = 0; ly < CHUNK_SIZE; ++ly) {
+                const int wy = oy + ly;
+                BlockId block = BG_AIR;
+
+                if (wy <= 2 || wy >= CINDERHOLD_CEILING) {
+                    block = BG_BEDROCK;
+                } else if (wy <= surface) {
+                    block = (wy == surface) ? BG_ASHBLOCK : BG_CINDERSTONE;
+                    if (wy < surface - 2 &&
+                        value_noise3((float)wx * 0.06f, (float)wy * 0.08f, (float)wz * 0.06f,
+                                     world->seed + 229u) > 0.62f) {
+                        block = BG_MAGMA;
+                    }
+                    if (block == BG_CINDERSTONE) {
+                        const float vein = hash3f(wx, wy, wz, world->seed + 233u);
+                        if (vein > 0.992f) {
+                            block = BG_LUMENSTONE;
+                        } else if (vein > 0.980f) {
+                            block = BG_EMBERLODE;
+                        }
+                    }
+                } else if (wy <= lava_level) {
+                    block = BG_MAGMA;
+                } else if (spike_len > 0 && wy >= CINDERHOLD_CEILING - 1 - spike_len) {
+                    block = BG_CINDERSTONE;
+                } else if (wy >= CINDERHOLD_CEILING - 3 &&
+                           hash3f(wx, wy, wz, world->seed + 239u) > 0.90f) {
+                    block = BG_GLOWMOSS;
+                }
+
+                chunk->blocks[(ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx] = block;
+            }
+        }
+    }
+}
+
+void cinderhold_build_arena(World *world) {
+    const bool was_deferring = world->defer_light;
+    world->defer_light = true;
+
+    const int half = CINDERHOLD_ARENA_HALF;
+    const int floor_y = CINDERHOLD_FLOOR;
+
+    /* A tall chamber so the fight has room to breathe. */
+    for (int x = -half - 8; x <= half + 8; ++x) {
+        for (int z = -half - 8; z <= half + 8; ++z) {
+            for (int y = 18; y < CINDERHOLD_CEILING; ++y) {
+                if (world_get_block(world, x, y, z) != BG_BEDROCK) {
+                    world_set_block(world, x, y, z, BG_AIR);
+                }
+            }
+        }
+    }
+
+    /* A mesa rising out of the magma, paved with cinderbrick on top. */
+    for (int x = -half; x <= half; ++x) {
+        for (int z = -half; z <= half; ++z) {
+            for (int y = 6; y < floor_y - 1; ++y) {
+                world_set_block(world, x, y, z, y < 12 ? BG_EMBERSTONE : BG_CINDERSTONE);
+            }
+            world_set_block(world, x, floor_y - 1, z, BG_CINDERBRICK);
+        }
+    }
+
+    /* The wall, open only where the gate is set into the southern face. */
+    for (int x = -half; x <= half; ++x) {
+        for (int z = -half; z <= half; ++z) {
+            if (x != -half && x != half && z != -half && z != half) {
+                continue;
+            }
+            for (int y = floor_y; y < floor_y + 9; ++y) {
+                if (z == half && x >= -2 && x <= 1 && y < floor_y + 5) {
+                    continue;
+                }
+                world_set_block(world, x, y, z,
+                                y == floor_y + 8 ? BG_CINDERSTONE : BG_CINDERBRICK);
+            }
+        }
+    }
+
+    /* A rift-style frame: 4x5 voidstone with a 2x3 burning opening, its base
+     * buried in the floor so the player steps straight into it. */
+    for (int dy = 0; dy < 5; ++dy) {
+        for (int d = 0; d < 4; ++d) {
+            const bool edge = (dy == 0 || dy == 4 || d == 0 || d == 3);
+            world_set_block(world, -2 + d, floor_y - 1 + dy, half,
+                            edge ? BG_VOIDSTONE : BG_CINDER_GATE);
+        }
+    }
+
+    /* Lumenstone set into the pavement keeps the middle of the arena lit, too
+     * far from the corner pillars for their glow to reach. */
+    const int inlays[4][2] = { { 0, -10 }, { 0, 10 }, { -10, 0 }, { 10, 0 } };
+    for (int i = 0; i < 4; ++i) {
+        world_set_block(world, inlays[i][0], floor_y - 1, inlays[i][1], BG_LUMENSTONE);
+    }
+
+    /* Four pillars of cinderbrick light the arena. */
+    const int corners[4][2] = {
+        { -half + 3, -half + 3 }, { half - 3, -half + 3 },
+        { -half + 3, half - 3 }, { half - 3, half - 3 }
+    };
+    for (int i = 0; i < 4; ++i) {
+        for (int y = floor_y; y < floor_y + 6; ++y) {
+            world_set_block(world, corners[i][0], y, corners[i][1], BG_CINDERBRICK);
+        }
+        world_set_block(world, corners[i][0], floor_y + 6, corners[i][1], BG_LUMENSTONE);
+    }
+
+    world->defer_light = was_deferring;
+    if (!world->defer_light) {
+        world_relight(world, -half - 8, -half - 8, half + 8, half + 8);
+    }
+}
+
 static void generate_upperworld_chunk(World *world, Chunk *chunk) {
     const int ox = chunk->cx * CHUNK_SIZE;
     const int oy = chunk->cy * CHUNK_SIZE;
@@ -647,7 +798,8 @@ static void decorate_upperworld(World *world, int x0, int z0, int x1, int z1) {
 }
 
 void world_generate_around(World *world, int center_cx, int center_cz, int radius) {
-    const int top = (world->dimension == BG_UPPERWORLD) ? UPPERWORLD_TOP : UNDERWORLD_TOP;
+    const int top = (world->dimension == BG_UPPERWORLD) ? UPPERWORLD_TOP
+                    : (world->dimension == BG_CINDERHOLD ? CINDERHOLD_TOP : UNDERWORLD_TOP);
     const int chunk_rows = top / CHUNK_SIZE;
     const bool was_deferring = world->defer_light;
     world->defer_light = true;
@@ -661,6 +813,8 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
                 }
                 if (world->dimension == BG_UPPERWORLD) {
                     generate_upperworld_chunk(world, chunk);
+                } else if (world->dimension == BG_CINDERHOLD) {
+                    generate_cinderhold_chunk(world, chunk);
                 } else {
                     generate_underworld_chunk(world, chunk);
                 }
@@ -685,8 +839,10 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
 }
 
 int world_surface_y(const World *world, int x, int z) {
-    const int start = (world->dimension == BG_UNDERWORLD) ? (UNDERWORLD_CEILING - 20)
-                                                          : (UPPERWORLD_TOP - 2);
+    const int start = (world->dimension == BG_UPPERWORLD)
+                          ? (UPPERWORLD_TOP - 2)
+                          : (world->dimension == BG_CINDERHOLD ? (CINDERHOLD_CEILING - 20)
+                                                              : (UNDERWORLD_CEILING - 20));
     for (int y = start; y >= 0; --y) {
         if (block_collidable(world_get_block(world, x, y, z)) &&
             !block_collidable(world_get_block(world, x, y + 1, z)) &&
@@ -746,7 +902,7 @@ static bool rift_ring_ok(const World *world, int cx, int cy, int cz, int axis, b
                 if (block != BG_VOIDSTONE) {
                     return false;
                 }
-            } else if (block == BG_PORTAL) {
+            } else if (block == BG_PORTAL || block == BG_CINDER_GATE) {
                 continue;
             } else if (block != BG_AIR) {
                 return false;
@@ -809,6 +965,51 @@ RiftFire rift_ignite(World *world, int x, int y, int z, int *cx, int *cy, int *c
     return RIFT_OPENED;
 }
 
+bool cinder_gate_open(World *world, int x, int y, int z) {
+    int cx = 0;
+    int cy = 0;
+    int cz = 0;
+    int axis = 0;
+    bool lit = false;
+    if (!rift_find(world, x, y, z, &cx, &cy, &cz, &axis, &lit)) {
+        return false;
+    }
+
+    bool hollow = false;
+    for (int iy = 1; iy <= 3; ++iy) {
+        for (int id = 1; id <= 2; ++id) {
+            const int bx = axis == 0 ? cx + id : cx;
+            const int bz = axis == 0 ? cz : cz + id;
+            const BlockId block = world_get_block(world, bx, cy + iy, bz);
+            if (block == BG_CINDER_GATE) {
+                continue;
+            }
+            if (block != BG_AIR) {
+                return false;
+            }
+            hollow = true;
+        }
+    }
+    if (!hollow) {
+        return true; /* Already burning. */
+    }
+
+    const bool was_deferring = world->defer_light;
+    world->defer_light = true;
+    for (int iy = 1; iy <= 3; ++iy) {
+        for (int id = 1; id <= 2; ++id) {
+            const int bx = axis == 0 ? cx + id : cx;
+            const int bz = axis == 0 ? cz : cz + id;
+            world_set_block(world, bx, cy + iy, bz, BG_CINDER_GATE);
+        }
+    }
+    world->defer_light = was_deferring;
+    if (!world->defer_light) {
+        world_relight(world, cx - 16, cz - 16, cx + 16, cz + 16);
+    }
+    return true;
+}
+
 void rift_build(World *world, int cx, int cy, int cz, int axis) {
     const bool was_deferring = world->defer_light;
     world->defer_light = true;
@@ -864,8 +1065,8 @@ enum {
     TILE_PALE_QUARTZ, TILE_CRIMSON_SIDE, TILE_CRIMSON_TOP, TILE_BLOODLEAVES,
     TILE_EMBERLODE, TILE_IRONLODE, TILE_PORTAL, TILE_GLOWMOSS, TILE_CINDERSTONE,
     TILE_ASHBLOCK,
-    /* Item sprites live at 32..38, so the new blocks sit after them. */
-    TILE_TORCH = 40, TILE_CHEST_SIDE, TILE_CHEST_TOP
+    /* The nine item sprites fill 32..40, so the later blocks start at 41. */
+    TILE_TORCH = 41, TILE_CHEST_SIDE, TILE_CHEST_TOP, TILE_CINDER_GATE
 };
 
 int block_tile(BlockId block, int face) {
@@ -902,6 +1103,7 @@ int block_tile(BlockId block, int face) {
         case BG_ASHBLOCK:       return TILE_ASHBLOCK;
         case BG_TORCH:          return TILE_TORCH;
         case BG_CHEST:          return top ? TILE_CHEST_TOP : TILE_CHEST_SIDE;
+        case BG_CINDER_GATE:    return TILE_CINDER_GATE;
         default:                return TILE_STONE;
     }
 }

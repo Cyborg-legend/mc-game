@@ -209,7 +209,7 @@ typedef struct {
     Pattern pattern;
 } TileDef;
 
-static const TileDef kTiles[44] = {
+static const TileDef kTiles[45] = {
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },      /* void */
     { 126, 126, 131,  86,  86,  92, PAT_COBBLE },      /* stone */
     { 120,  86,  58,  86,  60,  40, PAT_DIRT },        /* dirt */
@@ -249,9 +249,10 @@ static const TileDef kTiles[44] = {
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
     {   0,   0,   0,   0,   0,   0, PAT_UNUSED },
-    [40] = { 196, 148,  82, 255, 226, 150, PAT_FLAT },  /* torch */
-    [41] = { 150, 102,  54,  96,  62,  30, PAT_PLANKS }, /* chest side */
-    [42] = { 168, 122,  66,  96,  62,  30, PAT_GRID }    /* chest top */
+    [41] = { 196, 148,  82, 255, 226, 150, PAT_FLAT },   /* torch */
+    [42] = { 150, 102,  54,  96,  62,  30, PAT_PLANKS }, /* chest side */
+    [43] = { 168, 122,  66,  96,  62,  30, PAT_GRID },   /* chest top */
+    [44] = { 110,  30,  24, 255, 190,  90, PAT_SWIRL }   /* cinder gate */
 };
 
 static uint32_t pixel_hash(int tile, int px, int py) {
@@ -615,7 +616,12 @@ static GLuint build_atlas(void) {
         pixels[i * 4 + 3] = 255;
     }
 
-    for (int tile = 0; tile < 32; ++tile) {
+    const int tile_count = (int)(sizeof(kTiles) / sizeof(kTiles[0]));
+    for (int tile = 0; tile < tile_count; ++tile) {
+        /* 32..40 belong to the item sprites painted below. */
+        if (tile >= ITEM_TILE_BASE && tile < ITEM_TILE_BASE + ITEM_TILE_COUNT) {
+            continue;
+        }
         const TileDef *def = &kTiles[tile];
         if (def->pattern == PAT_UNUSED) {
             continue;
@@ -773,6 +779,18 @@ void renderer_set_environment(BgRenderer *renderer, Dimension dimension) {
         memcpy(renderer->light_color, light, sizeof(light));
         renderer->fog_start = 22.0f;
         renderer->fog_density = 0.0075f;
+    } else if (dimension == BG_CINDERHOLD) {
+        /* A sealed furnace: the only light is what the rock gives off. */
+        const float sky[3] = { 0.05f, 0.02f, 0.03f };
+        const float fog[3] = { 0.14f, 0.03f, 0.02f };
+        const float ambient[3] = { 0.30f, 0.13f, 0.10f };
+        const float light[3] = { 1.00f, 0.45f, 0.18f };
+        memcpy(renderer->sky, sky, sizeof(sky));
+        memcpy(renderer->fog_color, fog, sizeof(fog));
+        memcpy(renderer->ambient, ambient, sizeof(ambient));
+        memcpy(renderer->light_color, light, sizeof(light));
+        renderer->fog_start = 18.0f;
+        renderer->fog_density = 0.0085f;
     } else {
         const float sky[3] = { 0.52f, 0.72f, 0.95f };
         const float fog[3] = { 0.62f, 0.78f, 0.96f };
@@ -801,8 +819,8 @@ void renderer_set_time(BgRenderer *renderer, float phase) {
     if (day > 1.0f) day = 1.0f;
     renderer->sun_strength = day;
 
-    if (renderer->dimension == BG_UNDERWORLD) {
-        return; /* The rift realm glows the same no matter the hour. */
+    if (renderer->dimension != BG_UPPERWORLD) {
+        return; /* The two deep realms glow the same no matter the hour. */
     }
 
     const float dusk = expf(-elevation * elevation * 16.0f);
@@ -1359,6 +1377,8 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
             skin = BG_LUMENSTONE;
         } else if (type == MOB_CINDER_ALPHA) {
             skin = BG_CINDERBRICK;
+        } else if (type == MOB_CINDER_SOVEREIGN) {
+            skin = BG_CINDERSTONE;
         }
         if (mob->hurt_timer > 0.0f) {
             skin = BG_PALE_QUARTZ;
@@ -1376,7 +1396,7 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
             mob->z + sinf(mob->yaw) * forward
         };
         mesh_box(mesh, head_center, head_half,
-                 type == MOB_ASH_WISP ? BG_MAGMA : skin);
+                 (type == MOB_ASH_WISP || type == MOB_CINDER_SOVEREIGN) ? BG_MAGMA : skin);
     }
 
     if (mesh->index_count == 0) {

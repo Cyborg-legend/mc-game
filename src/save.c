@@ -4,7 +4,8 @@
 #include <string.h>
 
 #define SAVE_MAGIC 0x43524642u /* "BFRC" */
-#define SAVE_VERSION 3u
+#define SAVE_VERSION 4u
+#define QUEST_VERSION 3u
 #define LEGACY_VERSION 2u
 #define OLDEST_VERSION 1u
 
@@ -170,6 +171,10 @@ bool save_world(const char *path, const World *world, const BgPlayer *player) {
     fwrite(&world->quest_stage, sizeof(world->quest_stage), 1, file);
     const uint8_t boss = world->boss_defeated ? 1u : 0u;
     fwrite(&boss, sizeof(boss), 1, file);
+    const uint8_t cinder_open = world->cinder_open ? 1u : 0u;
+    const uint8_t cinder_boss = world->cinder_boss_defeated ? 1u : 0u;
+    fwrite(&cinder_open, sizeof(cinder_open), 1, file);
+    fwrite(&cinder_boss, sizeof(cinder_boss), 1, file);
 
     const uint32_t container_count = (uint32_t)world->container_count;
     fwrite(&container_count, sizeof(container_count), 1, file);
@@ -226,8 +231,9 @@ bool load_world(const char *path, World *world, BgPlayer *player) {
         return false;
     }
     if (magic != SAVE_MAGIC ||
-        (version != OLDEST_VERSION && version != LEGACY_VERSION && version != SAVE_VERSION) ||
-        dimension > (uint8_t)BG_UNDERWORLD || chunk_count > 200000u) {
+        (version != OLDEST_VERSION && version != LEGACY_VERSION && version != QUEST_VERSION &&
+         version != SAVE_VERSION) ||
+        dimension > (uint8_t)BG_CINDERHOLD || chunk_count > 200000u) {
         fclose(file);
         return false;
     }
@@ -295,6 +301,8 @@ bool load_world(const char *path, World *world, BgPlayer *player) {
     world->time_of_day = 0.18f;
     world->quest_stage = 0;
     world->boss_defeated = false;
+    world->cinder_open = false;
+    world->cinder_boss_defeated = false;
     if (version >= 3u) {
         if (fread(&world->time_of_day, sizeof(world->time_of_day), 1, file) != 1) {
             world->time_of_day = 0.18f;
@@ -305,6 +313,14 @@ bool load_world(const char *path, World *world, BgPlayer *player) {
         (void)fread(&boss, sizeof(boss), 1, file);
         world->quest_stage = quest > 4u ? 4u : quest;
         world->boss_defeated = boss != 0;
+        if (version >= 4u) {
+            uint8_t gate = 0;
+            uint8_t sovereign = 0;
+            (void)fread(&gate, sizeof(gate), 1, file);
+            (void)fread(&sovereign, sizeof(sovereign), 1, file);
+            world->cinder_open = gate != 0;
+            world->cinder_boss_defeated = sovereign != 0;
+        }
 
         uint32_t container_count = 0;
         if (fread(&container_count, sizeof(container_count), 1, file) == 1 &&

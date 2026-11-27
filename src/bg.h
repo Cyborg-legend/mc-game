@@ -10,7 +10,14 @@
 #define UPPERWORLD_TOP 96
 #define UNDERWORLD_CEILING 120
 #define UNDERWORLD_TOP 128
+#define CINDERHOLD_CEILING 78
+#define CINDERHOLD_TOP 96
 #define SEA_LEVEL 34
+
+/* The Cinderhold's arena sits on a fixed promontory so the gate can be found
+ * again from either side of a save. */
+#define CINDERHOLD_FLOOR 34
+#define CINDERHOLD_ARENA_HALF 24
 
 /* GLFW key codes run past 255 (arrows, Enter, Escape), so the table must too. */
 #define INPUT_KEY_COUNT 512
@@ -47,12 +54,14 @@ typedef enum {
     BG_ASHBLOCK,
     BG_TORCH,
     BG_CHEST,
+    BG_CINDER_GATE,
     BG_BLOCK_COUNT
 } BlockId;
 
 typedef enum {
     BG_UPPERWORLD = 0,
-    BG_UNDERWORLD = 1
+    BG_UNDERWORLD = 1,
+    BG_CINDERHOLD = 2
 } Dimension;
 
 typedef struct BgPlayer BgPlayer;
@@ -62,6 +71,8 @@ const char *dimension_name(Dimension dimension);
 bool block_collidable(BlockId block);
 bool block_liquid(BlockId block);
 bool block_portal(BlockId block);
+/* The Emberheart's gate into the Cinderhold; walking into it travels there. */
+bool block_cinder_gate(BlockId block);
 bool block_breakable(BlockId block);
 
 /* Atlas tile index for one block face; face order is +X, -X, +Y, -Y, +Z, -Z. */
@@ -100,6 +111,9 @@ typedef struct World {
     float time_of_day;   /* 0 = dawn, 0.25 = noon, 0.5 = dusk, 0.75 = midnight */
     uint8_t quest_stage;
     bool boss_defeated;
+    /* The Emberheart's gate has been lit and the Cinderhold's tyrant put down. */
+    bool cinder_open;
+    bool cinder_boss_defeated;
 } World;
 
 void world_init(World *world);
@@ -168,6 +182,15 @@ RiftFire rift_ignite(World *world, int x, int y, int z, int *cx, int *cy, int *c
 
 /* Carves and builds a lit twin frame at a known corner, used for the far side. */
 void rift_build(World *world, int cx, int cy, int cz, int axis);
+
+/* Strikes the Emberheart against a voidstone frame: the 2x3 opening fills with
+ * cinder gate blocks instead of rift portal. False when no hollow frame is
+ * there. */
+bool cinder_gate_open(World *world, int x, int y, int z);
+
+/* Raises the Cinderhold's arena: a paved promontory over the magma sea, walled
+ * in, with its gate set into the southern wall and four lit pillars. */
+void cinderhold_build_arena(World *world);
 
 /* ---- Items and inventory --------------------------------------------- */
 
@@ -266,6 +289,7 @@ typedef enum {
     MOB_CINDER_HOUND,
     MOB_ASH_WISP,
     MOB_CINDER_ALPHA,
+    MOB_CINDER_SOVEREIGN,
     MOB_TYPE_COUNT
 } MobType;
 
@@ -302,6 +326,9 @@ void mobs_clear(BgMobWorld *mobs);
 /* Places the Cinder Alpha near the player (Underworld only); false when there
  * is no room for it. */
 bool mobs_spawn_boss(BgMobWorld *mobs, World *world, float x, float y, float z);
+
+/* Places the Cinderhold's sovereign at a spot in the arena. */
+bool mobs_spawn_cinder_boss(BgMobWorld *mobs, World *world, float x, float y, float z);
 void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt);
 
 /* Index of the mob under the crosshair, -1 when there is none or a block is

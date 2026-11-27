@@ -11,7 +11,7 @@ static const char *const kBlockNames[BG_BLOCK_COUNT] = {
     "Bedrock", "Planks", "Sticks", "Crafting Table", "Brick", "Emberstone",
     "Ashsoil", "Lumenstone", "Magma", "Voidstone", "Cinderbrick", "Pale Quartz",
     "Crimson Wood", "Bloodleaves", "Emberlode", "Ironlode", "Rift Portal",
-    "Glowmoss", "Cinderstone", "Ashblock", "Torch", "Chest"
+    "Glowmoss", "Cinderstone", "Ashblock", "Torch", "Chest", "Cinder Gate"
 };
 
 const char *item_name(uint16_t item) {
@@ -50,6 +50,7 @@ bool block_drop(BlockId block, uint16_t *item, int *count) {
         case BG_AIR:
         case BG_BEDROCK:
         case BG_WATER:
+        case BG_CINDER_GATE:
             return false;
         case BG_CHEST:
             /* The block comes back whole; the caller empties it first. */
@@ -131,6 +132,7 @@ float block_hardness(BlockId block) {
         case BG_LEAVES:
         case BG_BLOODLEAVES:
         case BG_PORTAL:
+        case BG_CINDER_GATE:
             return 0.25f;
         case BG_GLOWMOSS:
             return 0.40f;
