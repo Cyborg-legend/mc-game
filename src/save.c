@@ -15,6 +15,15 @@ static void chunk_key_parts(uint64_t key, int *cx, int *cy, int *cz) {
     *cz = (int32_t)((uint32_t)((key >> 42) & 0x1FFFFFu) << 11) >> 11;
 }
 
+static bool file_exists(const char *path) {
+    FILE *probe = fopen(path, "rb");
+    if (!probe) {
+        return false;
+    }
+    fclose(probe);
+    return true;
+}
+
 /* ------------------------------------------------------------ inventory */
 
 static void write_inventory(FILE *file, const BgStack *slots) {
@@ -200,8 +209,23 @@ bool save_world(const char *path, const World *world, const BgPlayer *player) {
         return false;
     }
 
-    remove(path);
+    /* The save being replaced is kept as <path>.bak for one more generation.
+     * Moving it aside rather than deleting it means load_world still has a
+     * complete world to fall back on if the new file is ever damaged. */
+    char backup[160];
+    snprintf(backup, sizeof(backup), "%s.bak", path);
+    bool preserved = false;
+    if (file_exists(path)) {
+        remove(backup);
+        preserved = rename(path, backup) == 0;
+        if (!preserved) {
+            remove(path); /* Last resort: the old swap behaviour. */
+        }
+    }
     if (rename(temporary, path) != 0) {
+        if (preserved) {
+            rename(backup, path);
+        }
         remove(temporary);
         return false;
     }
@@ -210,7 +234,7 @@ bool save_world(const char *path, const World *world, const BgPlayer *player) {
 
 /* -------------------------------------------------------------- loading */
 
-bool load_world(const char *path, World *world, BgPlayer *player) {
+static bool load_world_file(const char *path, World *world, BgPlayer *player) {
     FILE *file = fopen(path, "rb");
     if (!file) {
         return false;
@@ -366,4 +390,20 @@ bool load_world(const char *path, World *world, BgPlayer *player) {
     /* Light is derived data, so it is rebuilt from the blocks just read. */
     world_relight_all(world);
     return true;
+}
+
+/* A damaged or half-written save falls back to the previous generation, so a
+ * bad shutdown costs the player one save rather than the whole world. */
+bool load_world(const char *path, World *world, BgPlayer *player) {
+    const BgPlayer snapshot = *player;
+    if (load_world_file(path, world, player)) {
+        return true;
+    }
+    char backup[160];
+    snprintf(backup, sizeof(backup), "%s.bak", path);
+    if (!file_exists(backup)) {
+        return false;
+    }
+    *player = snapshot;
+    return load_world_file(backup, world, player);
 }

@@ -72,6 +72,15 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      # GLFW and GLEW are linked statically, so the exe stands alone and the
+      # zip is what a player downloads.
+      - name: Package release
+        if: success()
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/Release/blockforge.exe -DestinationPath blockforge-windows.zip -Force
+          Get-Item blockforge-windows.zip | Select-Object Name, Length
+
       - name: Upload build
         if: always()
         uses: actions/upload-artifact@v4
@@ -80,3 +89,4 @@ jobs:
           path: |
             build/Release/blockforge.exe
             build/Release/*.dll
+            blockforge-windows.zip

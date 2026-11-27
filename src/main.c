@@ -579,8 +579,14 @@ static bool world_file_exists(int id, Dimension dimension) {
     return true;
 }
 
+/* The list of worlds is the only thing naming them, so it is swapped in the
+ * same way as a save: written aside, then renamed over the old copy. */
 static void worlds_write_index(const App *app) {
-    FILE *file = fopen(WORLD_INDEX, "wb");
+    char temporary[128];
+    char backup[128];
+    snprintf(temporary, sizeof(temporary), "%s.tmp", WORLD_INDEX);
+    snprintf(backup, sizeof(backup), "%s.bak", WORLD_INDEX);
+    FILE *file = fopen(temporary, "wb");
     if (!file) {
         return;
     }
@@ -589,12 +595,23 @@ static void worlds_write_index(const App *app) {
         fprintf(file, "%d\t%s\t%llu\t%d\n", app->worlds[i].id, app->worlds[i].name,
                 (unsigned long long)app->worlds[i].seed, (int)app->worlds[i].dimension);
     }
-    fclose(file);
+    const bool ok = ferror(file) == 0;
+    if (fclose(file) != 0 || !ok) {
+        remove(temporary);
+        return;
+    }
+    remove(backup);
+    const bool preserved = rename(WORLD_INDEX, backup) == 0;
+    if (rename(temporary, WORLD_INDEX) != 0) {
+        if (preserved) {
+            rename(backup, WORLD_INDEX);
+        }
+        remove(temporary);
+    }
 }
 
-static void worlds_read_index(App *app) {
-    app->world_count = 0;
-    FILE *file = fopen(WORLD_INDEX, "rb");
+static void worlds_read_index_file(App *app, const char *path) {
+    FILE *file = fopen(path, "rb");
     if (!file) {
         return;
     }
@@ -636,6 +653,19 @@ static void worlds_read_index(App *app) {
                                : BG_UPPERWORLD;
     }
     fclose(file);
+}
+
+static void worlds_read_index(App *app) {
+    app->world_count = 0;
+    worlds_read_index_file(app, WORLD_INDEX);
+    if (app->world_count > 0) {
+        return;
+    }
+    /* Nothing usable was listed: the previous generation may still name the
+     * worlds the player has on disk. */
+    char backup[128];
+    snprintf(backup, sizeof(backup), "%s.bak", WORLD_INDEX);
+    worlds_read_index_file(app, backup);
 }
 
 static int worlds_next_id(const App *app) {
@@ -733,6 +763,9 @@ static void delete_world(App *app, int index) {
     for (int realm = 0; realm < REALM_COUNT; ++realm) {
         world_realm_path(app->worlds[index].id, kRealms[realm], path, sizeof(path));
         remove(path);
+        char backup[100];
+        snprintf(backup, sizeof(backup), "%s.bak", path);
+        remove(backup);
     }
 
     for (int i = index; i + 1 < app->world_count; ++i) {
