@@ -387,7 +387,8 @@ static bool load_world_file(const char *path, World *world, BgPlayer *player) {
 
     fclose(file);
     world->defer_light = false;
-    /* Light is derived data, so it is rebuilt from the blocks just read. */
+    /* Both caches are derived data, rebuilt from the blocks just read. */
+    world_refresh_landmarks(world);
     world_relight_all(world);
     return true;
 }

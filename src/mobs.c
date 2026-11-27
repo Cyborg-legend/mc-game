@@ -459,6 +459,8 @@ static void update_sovereign(BgMob *mob, const World *world, BgPlayer *player,
             if (mob->windup <= 0.0f) {
                 mob->windup = 0.0f;
                 if (distance < 13.0f && player->invuln <= 0.0f) {
+                    player->last_harm = BG_HARM_MOB;
+                    player->last_harm_mob = (uint8_t)MOB_CINDER_SOVEREIGN;
                     player->health -= 4;
                     player->invuln = 0.65f;
                 }
@@ -546,6 +548,8 @@ static void mob_attack_player(BgMob *mob, const World *world, BgPlayer *player) 
     if (player->invuln > 0.0f) {
         return;
     }
+    player->last_harm = BG_HARM_MOB;
+    player->last_harm_mob = mob->type;
     player->health -= damage;
     player->invuln = 0.65f;
 

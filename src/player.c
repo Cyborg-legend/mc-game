@@ -48,6 +48,8 @@ void player_init(BgPlayer *player) {
     player->health = 20;
     player->selected = 0;
     player->invuln = 0.0f;
+    player->last_harm = BG_HARM_NONE;
+    player->last_harm_mob = 0;
 
     /* A small starter kit: enough timber to reach a crafting table, and a
      * wooden pick so the first stone is not a dead end. Everything better has
@@ -174,6 +176,8 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
         if (player->fall_distance > 3.5f) {
             int damage = (int)(player->fall_distance - 3.0f);
             if (damage < 1) damage = 1;
+            player->last_harm = BG_HARM_FALL;
+            player->last_harm_mob = 0;
             player->health -= damage;
         }
         player->fall_distance = 0.0f;
@@ -183,6 +187,8 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
     if (head_under) {
         player->drown_timer += dt;
         if (player->drown_timer > 12.0f) {
+            player->last_harm = BG_HARM_DROWN;
+            player->last_harm_mob = 0;
             player->health -= 2;
             player->drown_timer = 10.0f;
         }

@@ -83,6 +83,9 @@ typedef struct Chunk {
     /* Sky light in the high nibble, block light in the low one. Derived data:
      * it is rebuilt from the blocks whenever a save is loaded. */
     uint8_t light[CHUNK_VOLUME];
+    /* Derived cache: this chunk holds a rift or gate, so the compass has to
+     * look inside it. Rebuilt when a chunk is generated or a save is loaded. */
+    bool landmark;
     int cx, cy, cz;
 } Chunk;
 
@@ -383,6 +386,14 @@ typedef struct BgInput {
     bool mouse_held[5]; /* still down, for held-to-mine */
 } BgInput;
 
+/* What last took the player's health, so the death card can name it. */
+typedef enum {
+    BG_HARM_NONE = 0,
+    BG_HARM_FALL,
+    BG_HARM_DROWN,
+    BG_HARM_MOB
+} BgHarm;
+
 struct BgPlayer {
     float x, y, z;
     float vx, vy, vz;
@@ -391,6 +402,9 @@ struct BgPlayer {
     int health;
     int selected;
     float invuln;
+    /* Transient, never saved: the last thing that took health. */
+    uint8_t last_harm;     /* BgHarm */
+    uint8_t last_harm_mob; /* MobType when the harm was a mob */
     /* Transient state: how far the current fall has dropped, and how long the
      * head has been under water. Neither is saved. */
     float fall_distance;
@@ -404,6 +418,37 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
 bool player_raycast(const BgPlayer *player, const World *world, float max_dist,
                     int *bx, int *by, int *bz, BlockId *type, int normal[3]);
 bool player_place(BgPlayer *player, World *world, BlockId block, int *px, int *py, int *pz);
+
+/* ---- Landmarks (rift compass) ---------------------------------------- */
+
+typedef enum {
+    BG_LANDMARK_NONE = 0,
+    BG_LANDMARK_RIFT,
+    BG_LANDMARK_CINDER_GATE
+} BgLandmarkKind;
+
+typedef struct BgLandmark {
+    BgLandmarkKind kind;
+    int x, y, z;     /* a block of the way through */
+    float distance;  /* horizontal blocks to it */
+    float bearing;   /* world angle, atan2(dz, dx), the same space as player yaw */
+} BgLandmark;
+
+/* Nearest lit rift or Cinderhold gate within radius blocks on the ground
+ * plane. False when there is none, which leaves *out untouched. */
+bool world_nearest_landmark(const World *world, float x, float y, float z, int radius,
+                            BgLandmark *out);
+
+/* Rebuilds the per-chunk "holds a rift or gate" cache after a bulk change or
+ * a load, so the compass does not walk every chunk every time. */
+void world_refresh_landmarks(World *world);
+
+/* Angle from where the player is facing to the landmark, in radians on
+ * (-pi, pi]: positive is to the player's right, negative to the left. */
+float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landmark);
+
+/* "AHEAD", "RIGHT 40", "BACK LEFT", "BEHIND" and so on. */
+void landmark_bearing_text(float relative, char *out, size_t size);
 
 /* ---- Save ------------------------------------------------------------ */
 

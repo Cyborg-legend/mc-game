@@ -27,6 +27,10 @@ Cinder Alpha, then strike it into a voidstone frame to open the way to
 Losing window focus pauses the game and writes the world out, so alt-tabbing
 is always safe.
 
+The strip in the top-right corner is the rift compass: it names the nearest lit
+rift or Cinderhold gate, how far away it is in blocks, and which way to turn.
+It stays hidden while no way through is within range.
+
 ## Building
 
 Requirements: CMake 3.18+, a C11 compiler, GLFW 3.4 and GLEW 2.2. Both

@@ -113,6 +113,10 @@ typedef struct App {
     BgStack cursor;
     int open_chest;
 
+    /* The rift compass: nearest way through, refreshed a few times a second. */
+    BgLandmark landmark;
+    float landmark_timer;
+
     bool renaming;
     char rename_text[WORLD_NAME_MAX];
     float ending_timer;
@@ -1180,6 +1184,8 @@ static void begin_death(App *app) {
 
 static void respawn(App *app) {
     app->death_timer = 0.0f;
+    app->player.last_harm = BG_HARM_NONE;
+    app->player.last_harm_mob = 0;
     app->player.health = 20;
     app->player.invuln = 1.5f;
     app->player.vx = app->player.vy = app->player.vz = 0.0f;
@@ -2101,6 +2107,36 @@ static void render_debug(App *app) {
     ui_free(&ui);
 }
 
+static void upper_copy(char *out, size_t size, const char *in) {
+    size_t i = 0;
+    for (; in[i] != '\0' && i + 1 < size; ++i) {
+        const char c = in[i];
+        out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    out[i] = '\0';
+}
+
+/* Names what actually took the player's health, rather than only the realm. */
+static void death_cause_text(const BgPlayer *player, char *out, size_t size) {
+    switch ((BgHarm)player->last_harm) {
+        case BG_HARM_FALL:
+            snprintf(out, size, "THE FALL BROKE YOU");
+            break;
+        case BG_HARM_DROWN:
+            snprintf(out, size, "THE WATER TOOK YOU");
+            break;
+        case BG_HARM_MOB: {
+            char name[48];
+            upper_copy(name, sizeof(name), mob_name((MobType)player->last_harm_mob));
+            snprintf(out, size, "SLAIN BY THE %s", name);
+            break;
+        }
+        default:
+            snprintf(out, size, "YOU DID NOT COME BACK");
+            break;
+    }
+}
+
 static void render_death(App *app) {
     BgUi ui;
     memset(&ui, 0, sizeof(ui));
@@ -2114,19 +2150,50 @@ static void render_death(App *app) {
     const float soft[4] = { 0.88f, 0.84f, 0.82f, 0.92f };
     draw_shadowed_centered(&ui, width * 0.5f, height * 0.38f, 6.0f, "YOU DIED", title);
 
-    const char *claim = "THE WILDERNESS TAKES YOU";
-    if (app->world.dimension == BG_UNDERWORLD) {
-        claim = "THE DEEP CLAIMS YOU";
-    } else if (app->world.dimension == BG_CINDERHOLD) {
-        claim = "THE CINDERHOLD CLAIMS YOU";
-    }
-    ui_text_centered(&ui, width * 0.5f, height * 0.50f, 2.2f, claim, soft);
+    char cause[64];
+    death_cause_text(&app->player, cause, sizeof(cause));
+    ui_text_centered(&ui, width * 0.5f, height * 0.50f, 2.2f, cause, soft);
+
+    char realm[64];
+    char realm_name[32];
+    upper_copy(realm_name, sizeof(realm_name), dimension_name(app->world.dimension));
+    snprintf(realm, sizeof(realm), "IN THE %s", realm_name);
+    ui_text_centered(&ui, width * 0.5f, height * 0.545f, 1.5f, realm, soft);
 
     char note[96];
     snprintf(note, sizeof(note), "THE PACK COMES BACK WITH YOU IN %d",
              (int)(app->death_timer + 0.99f));
     ui_text_centered(&ui, width * 0.5f, height * 0.57f, 1.6f, note, soft);
 
+    renderer_draw_ui(&app->renderer, &ui);
+    ui_free(&ui);
+}
+
+/* The bearing strip: which way the nearest rift or gate lies, how far, and
+ * which way to turn. Nothing is drawn until one is in range. */
+static void render_compass(App *app) {
+    if (app->landmark.kind == BG_LANDMARK_NONE) {
+        return;
+    }
+    const bool gate = app->landmark.kind == BG_LANDMARK_CINDER_GATE;
+    char line[96];
+    if (app->landmark.distance < 2.0f) {
+        snprintf(line, sizeof(line), "%s HERE", gate ? "GATE" : "RIFT");
+    } else {
+        char side[32];
+        landmark_bearing_text(landmark_relative_bearing(&app->player, &app->landmark),
+                              side, sizeof(side));
+        snprintf(line, sizeof(line), "%s  %dM  %s", gate ? "GATE" : "RIFT",
+                 (int)(app->landmark.distance + 0.5f), side);
+    }
+
+    BgUi ui;
+    memset(&ui, 0, sizeof(ui));
+    const float color[4] = { 0.86f, 0.94f, 1.0f, 0.92f };
+    const float shadow[4] = { 0.05f, 0.06f, 0.08f, 0.88f };
+    const float x = (float)app->width - ui_text_width(line, 1.5f) - 20.0f;
+    ui_text(&ui, x + 1.0f, 93.0f, 1.5f, line, shadow);
+    ui_text(&ui, x, 92.0f, 1.5f, line, color);
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
 }
@@ -3331,6 +3398,20 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         return;
     }
 
+    /* The compass scans loaded chunks, so it is refreshed twice a second
+     * rather than every frame. */
+    app->landmark_timer -= dt;
+    if (app->landmark_timer <= 0.0f) {
+        app->landmark_timer = 0.5f;
+        BgLandmark found;
+        if (world_nearest_landmark(&app->world, app->player.x, app->player.y, app->player.z,
+                                   160, &found)) {
+            app->landmark = found;
+        } else {
+            app->landmark.kind = BG_LANDMARK_NONE;
+        }
+    }
+
     if (key_pressed(app, GLFW_KEY_F3)) {
         app->show_debug = !app->show_debug;
     }
@@ -3740,6 +3821,7 @@ int main(void) {
             renderer_draw_hud(&g_app.renderer, &g_app.player);
             render_mining(&g_app);
             render_toast(&g_app);
+            render_compass(&g_app);
             if (g_app.death_timer > 0.0f) {
                 render_death(&g_app);
             }

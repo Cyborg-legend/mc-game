@@ -1,6 +1,7 @@
 #include "bg.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +25,124 @@ bool block_portal(BlockId block) {
 
 bool block_cinder_gate(BlockId block) {
     return block == BG_CINDER_GATE;
+}
+
+/* ------------------------------------------------------------ landmarks */
+
+static bool chunk_holds_landmark(const Chunk *chunk) {
+    for (int i = 0; i < CHUNK_VOLUME; ++i) {
+        if (chunk->blocks[i] == BG_PORTAL || chunk->blocks[i] == BG_CINDER_GATE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void world_refresh_landmarks(World *world) {
+    for (size_t i = 0; i < world->capacity; ++i) {
+        if (world->slots[i].used) {
+            world->slots[i].chunk.landmark = chunk_holds_landmark(&world->slots[i].chunk);
+        }
+    }
+}
+
+bool world_nearest_landmark(const World *world, float x, float y, float z, int radius,
+                            BgLandmark *out) {
+    (void)y;
+    if (!world || !out || radius <= 0) {
+        return false;
+    }
+    const float limit = (float)radius;
+    float best = limit * limit;
+    bool found = false;
+
+    for (size_t i = 0; i < world->capacity; ++i) {
+        const ChunkSlot *slot = &world->slots[i];
+        if (!slot->used) {
+            continue;
+        }
+        const Chunk *chunk = &slot->chunk;
+        if (!chunk->landmark) {
+            continue;
+        }
+        const float centre_x = (float)(chunk->cx * CHUNK_SIZE) + CHUNK_SIZE * 0.5f;
+        const float centre_z = (float)(chunk->cz * CHUNK_SIZE) + CHUNK_SIZE * 0.5f;
+        const float off_x = centre_x - x;
+        const float off_z = centre_z - z;
+        /* Skip whole chunks that cannot hold anything inside the radius. */
+        if (off_x * off_x + off_z * off_z > (limit + 12.0f) * (limit + 12.0f)) {
+            continue;
+        }
+
+        for (int by = 0; by < CHUNK_SIZE; ++by) {
+            for (int bz = 0; bz < CHUNK_SIZE; ++bz) {
+                for (int bx = 0; bx < CHUNK_SIZE; ++bx) {
+                    const BlockId block =
+                        chunk->blocks[(by * CHUNK_SIZE + bz) * CHUNK_SIZE + bx];
+                    const bool gate = block_cinder_gate(block);
+                    if (!gate && !block_portal(block)) {
+                        continue;
+                    }
+                    const int wx = chunk->cx * CHUNK_SIZE + bx;
+                    const int wz = chunk->cz * CHUNK_SIZE + bz;
+                    const float dx = (float)wx + 0.5f - x;
+                    const float dz = (float)wz + 0.5f - z;
+                    const float distance2 = dx * dx + dz * dz;
+                    if (distance2 > best) {
+                        continue;
+                    }
+                    best = distance2;
+                    found = true;
+                    out->kind = gate ? BG_LANDMARK_CINDER_GATE : BG_LANDMARK_RIFT;
+                    out->x = wx;
+                    out->y = chunk->cy * CHUNK_SIZE + by;
+                    out->z = wz;
+                    out->distance = sqrtf(distance2);
+                    out->bearing = atan2f(dz, dx);
+                }
+            }
+        }
+    }
+    return found;
+}
+
+float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landmark) {
+    const float dx = (float)landmark->x + 0.5f - player->x;
+    const float dz = (float)landmark->z + 0.5f - player->z;
+    if (dx == 0.0f && dz == 0.0f) {
+        return 0.0f;
+    }
+    /* Forward is (cos yaw, sin yaw), so the angle between the two is the
+     * bearing the player has to turn through. Right turns are positive. */
+    float relative = atan2f(dz, dx) - player->yaw;
+    while (relative > 3.14159265f) {
+        relative -= 6.28318531f;
+    }
+    while (relative < -3.14159265f) {
+        relative += 6.28318531f;
+    }
+    return relative;
+}
+
+void landmark_bearing_text(float relative, char *out, size_t size) {
+    const float degrees = relative * 57.29578f;
+    if (degrees >= -20.0f && degrees <= 20.0f) {
+        snprintf(out, size, "AHEAD");
+    } else if (degrees > 20.0f && degrees < 70.0f) {
+        snprintf(out, size, "RIGHT %d", (int)(degrees + 0.5f));
+    } else if (degrees >= 70.0f && degrees <= 115.0f) {
+        snprintf(out, size, "RIGHT");
+    } else if (degrees > 115.0f && degrees < 160.0f) {
+        snprintf(out, size, "BACK RIGHT");
+    } else if (degrees < -20.0f && degrees > -70.0f) {
+        snprintf(out, size, "LEFT %d", (int)(-degrees + 0.5f));
+    } else if (degrees <= -70.0f && degrees >= -115.0f) {
+        snprintf(out, size, "LEFT");
+    } else if (degrees < -115.0f && degrees > -160.0f) {
+        snprintf(out, size, "BACK LEFT");
+    } else {
+        snprintf(out, size, "BEHIND");
+    }
 }
 
 bool block_collidable(BlockId block) {
@@ -269,6 +388,9 @@ void world_set_block(World *world, int x, int y, int z, BlockId block) {
         return;
     }
     chunk->blocks[((y & 15) * CHUNK_SIZE + (z & 15)) * CHUNK_SIZE + (x & 15)] = block;
+    if (block == BG_PORTAL || block == BG_CINDER_GATE) {
+        chunk->landmark = true;
+    }
 
     /* An edit can darken or light a cave up to the light radius away. */
     if (!world->defer_light) {
@@ -818,6 +940,7 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
                 } else {
                     generate_underworld_chunk(world, chunk);
                 }
+                chunk->landmark = chunk_holds_landmark(chunk);
             }
         }
     }
