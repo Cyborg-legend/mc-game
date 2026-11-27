@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,6 +130,7 @@ static void stream_around_player(App *app);
 static void quest_objective(const App *app, char *out, size_t size);
 static void save_active_world(App *app);
 static void set_cursor_captured(GLFWwindow *window, bool captured);
+static void ensure_world_dir(void);
 
 /* ------------------------------------------------------------- callbacks */
 
@@ -160,6 +162,45 @@ static void on_focus(GLFWwindow *window, int focused) {
     g_app.autosave_timer = 0.0f;
     save_active_world(&g_app);
     set_cursor_captured(window, false);
+}
+
+/* A crash report nobody can read is a crash nobody can fix, so the state is
+ * written beside the worlds before the process dies. */
+static void write_crash_log(const char *reason) {
+    ensure_world_dir();
+    FILE *file = fopen("worlds/last_crash.log", "wb");
+    if (!file) {
+        return;
+    }
+    fprintf(file, "BlockForge %s crash\n", BFC_VERSION);
+    fprintf(file, "reason: %s\n", reason ? reason : "unknown");
+    fprintf(file, "realm: %s\n", dimension_name(g_app.world.dimension));
+    fprintf(file, "position: %.2f %.2f %.2f\n", (double)g_app.player.x,
+            (double)g_app.player.y, (double)g_app.player.z);
+    fprintf(file, "health: %d  quest: %u  open_gate: %d\n", g_app.player.health,
+            (unsigned)g_app.world.quest_stage, g_app.world.cinder_open ? 1 : 0);
+    fprintf(file, "world: %s\n",
+            (g_app.active_world >= 0 && g_app.active_world < g_app.world_count)
+                ? g_app.worlds[g_app.active_world].name
+                : "none");
+    fflush(file);
+    fclose(file);
+}
+
+static void on_fatal_signal(int signal_number) {
+    static volatile sig_atomic_t handling = 0;
+    if (handling) {
+        _Exit(3);
+    }
+    handling = 1;
+    char reason[48];
+    snprintf(reason, sizeof(reason), "fatal signal %d", signal_number);
+    write_crash_log(reason);
+    _Exit(3);
+}
+
+static void on_glfw_error(int code, const char *description) {
+    fprintf(stderr, "GLFW error %d: %s\n", code, description ? description : "unknown");
 }
 
 static void on_char(GLFWwindow *window, unsigned int codepoint) {
@@ -991,11 +1032,18 @@ static bool world_import_bundle(App *app, const char *path) {
     /* Older bundles hold two realms; the current format holds all three. */
     const int realm_count = memcmp(magic, "BFBUNDL2", 8) == 0 ? 3 : 2;
 
+    /* Every realm is staged beside its target first, so a bundle that turns
+     * out to be truncated leaves nothing half-written behind. */
     const int new_id = worlds_next_id(app);
-    bool wrote_any = false;
+    char staged[REALM_COUNT][128];
+    char final_paths[REALM_COUNT][104];
+    int staged_count = 0;
+    bool failed = false;
+
     for (int realm = 0; realm < realm_count; ++realm) {
         uint8_t present = 0;
         if (fread(&present, 1, 1, in) != 1) {
+            failed = true;
             break;
         }
         if (!present) {
@@ -1003,12 +1051,16 @@ static bool world_import_bundle(App *app, const char *path) {
         }
         uint32_t length = 0;
         if (fread(&length, sizeof(length), 1, in) != 1 || length > 200u * 1024u * 1024u) {
+            failed = true;
             break;
         }
-        char target[96];
-        world_realm_path(new_id, kRealms[realm], target, sizeof(target));
-        FILE *out = fopen(target, "wb");
+        world_realm_path(new_id, kRealms[realm], final_paths[staged_count],
+                         sizeof(final_paths[staged_count]));
+        snprintf(staged[staged_count], sizeof(staged[staged_count]), "%s.tmp",
+                 final_paths[staged_count]);
+        FILE *out = fopen(staged[staged_count], "wb");
         if (!out) {
+            failed = true;
             break;
         }
         char buffer[8192];
@@ -1022,16 +1074,28 @@ static bool world_import_bundle(App *app, const char *path) {
             fwrite(buffer, 1, got, out);
             remaining -= (uint32_t)got;
         }
-        fclose(out);
-        if (remaining != 0) {
-            remove(target);
+        const bool short_read = remaining != 0 || ferror(out) != 0;
+        if (fclose(out) != 0 || short_read) {
+            remove(staged[staged_count]);
+            failed = true;
             break;
         }
-        wrote_any = true;
+        staged_count++;
     }
     fclose(in);
-    if (!wrote_any) {
+
+    if (failed || staged_count == 0) {
+        for (int i = 0; i < staged_count; ++i) {
+            remove(staged[i]);
+        }
         return false;
+    }
+
+    for (int i = 0; i < staged_count; ++i) {
+        remove(final_paths[i]);
+        if (rename(staged[i], final_paths[i]) != 0) {
+            remove(staged[i]);
+        }
     }
 
     WorldEntry *entry = &app->worlds[app->world_count++];
@@ -2172,19 +2236,42 @@ static void render_death(App *app) {
 /* The bearing strip: which way the nearest rift or gate lies, how far, and
  * which way to turn. Nothing is drawn until one is in range. */
 static void render_compass(App *app) {
-    if (app->landmark.kind == BG_LANDMARK_NONE) {
-        return;
-    }
-    const bool gate = app->landmark.kind == BG_LANDMARK_CINDER_GATE;
     char line[96];
-    if (app->landmark.distance < 2.0f) {
-        snprintf(line, sizeof(line), "%s HERE", gate ? "GATE" : "RIFT");
-    } else {
+    float nearest = -1.0f;
+
+    if (app->landmark.kind != BG_LANDMARK_NONE) {
+        const bool gate = app->landmark.kind == BG_LANDMARK_CINDER_GATE;
+        if (app->landmark.distance < 2.0f) {
+            snprintf(line, sizeof(line), "%s HERE", gate ? "GATE" : "RIFT");
+        } else {
+            char side[32];
+            landmark_bearing_text(landmark_relative_bearing(&app->player, &app->landmark),
+                                  side, sizeof(side));
+            snprintf(line, sizeof(line), "%s  %dM  %s", gate ? "GATE" : "RIFT",
+                     (int)(app->landmark.distance + 0.5f), side);
+        }
+        nearest = app->landmark.distance;
+    }
+
+    /* A hunting boss is the nearest thing worth finding, so it wins when it
+     * is closer than any way through. */
+    float mob_distance = 0.0f;
+    const int mob = mobs_nearest_hostile(&app->mobs, app->player.x, app->player.z,
+                                         &mob_distance);
+    if (mob >= 0 && mob_distance <= 120.0f && (nearest < 0.0f || mob_distance < nearest)) {
         char side[32];
-        landmark_bearing_text(landmark_relative_bearing(&app->player, &app->landmark),
+        char name[40];
+        landmark_bearing_text(bearing_to_point(app->player.x, app->player.z,
+                                               app->player.yaw, app->mobs.mobs[mob].x,
+                                               app->mobs.mobs[mob].z),
                               side, sizeof(side));
-        snprintf(line, sizeof(line), "%s  %dM  %s", gate ? "GATE" : "RIFT",
-                 (int)(app->landmark.distance + 0.5f), side);
+        upper_copy(name, sizeof(name), mob_name((MobType)app->mobs.mobs[mob].type));
+        snprintf(line, sizeof(line), "%s  %dM  %s", name, (int)(mob_distance + 0.5f), side);
+        nearest = mob_distance;
+    }
+
+    if (nearest < 0.0f) {
+        return;
     }
 
     BgUi ui;
@@ -3700,6 +3787,11 @@ static void draw_world(App *app) {
 }
 
 int main(void) {
+    signal(SIGSEGV, on_fatal_signal);
+    signal(SIGABRT, on_fatal_signal);
+    signal(SIGFPE, on_fatal_signal);
+    glfwSetErrorCallback(on_glfw_error);
+
     if (!glfwInit()) {
         fprintf(stderr, "Failed to initialise GLFW\n");
         return 1;

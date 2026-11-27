@@ -623,6 +623,28 @@ bool mobs_spawn_cinder_boss(BgMobWorld *mobs, World *world, float x, float y, fl
     return false;
 }
 
+int mobs_nearest_hostile(const BgMobWorld *mobs, float x, float z, float *distance) {
+    int best = -1;
+    float best_distance2 = 0.0f;
+    for (int i = 0; i < MAX_MOBS; ++i) {
+        const BgMob *mob = &mobs->mobs[i];
+        if (!mob->alive || !mob_hostile((MobType)mob->type)) {
+            continue;
+        }
+        const float dx = mob->x - x;
+        const float dz = mob->z - z;
+        const float d2 = dx * dx + dz * dz;
+        if (best < 0 || d2 < best_distance2) {
+            best = i;
+            best_distance2 = d2;
+        }
+    }
+    if (best >= 0 && distance) {
+        *distance = sqrtf(best_distance2);
+    }
+    return best;
+}
+
 void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt) {
     if (dt > 0.05f) {
         dt = 0.05f;

@@ -336,6 +336,10 @@ bool mobs_spawn_boss(BgMobWorld *mobs, World *world, float x, float y, float z);
 bool mobs_spawn_cinder_boss(BgMobWorld *mobs, World *world, float x, float y, float z);
 void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt);
 
+/* Nearest living hostile mob to a point on the ground plane, or -1. Used by
+ * the compass so a hunt has a direction. */
+int mobs_nearest_hostile(const BgMobWorld *mobs, float x, float z, float *distance);
+
 /* Index of the mob under the crosshair, -1 when there is none or a block is
  * in the way. */
 int mobs_pick(const BgMobWorld *mobs, const World *world, const BgPlayer *player,
@@ -446,6 +450,9 @@ void world_refresh_landmarks(World *world);
 /* Angle from where the player is facing to the landmark, in radians on
  * (-pi, pi]: positive is to the player's right, negative to the left. */
 float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landmark);
+
+/* The same bearing to any point in the world, for things that are not blocks. */
+float bearing_to_point(float from_x, float from_z, float yaw, float to_x, float to_z);
 
 /* "AHEAD", "RIGHT 40", "BACK LEFT", "BEHIND" and so on. */
 void landmark_bearing_text(float relative, char *out, size_t size);

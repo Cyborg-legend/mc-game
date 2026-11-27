@@ -106,15 +106,15 @@ bool world_nearest_landmark(const World *world, float x, float y, float z, int r
     return found;
 }
 
-float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landmark) {
-    const float dx = (float)landmark->x + 0.5f - player->x;
-    const float dz = (float)landmark->z + 0.5f - player->z;
+float bearing_to_point(float from_x, float from_z, float yaw, float to_x, float to_z) {
+    const float dx = to_x - from_x;
+    const float dz = to_z - from_z;
     if (dx == 0.0f && dz == 0.0f) {
         return 0.0f;
     }
     /* Forward is (cos yaw, sin yaw), so the angle between the two is the
      * bearing the player has to turn through. Right turns are positive. */
-    float relative = atan2f(dz, dx) - player->yaw;
+    float relative = atan2f(dz, dx) - yaw;
     while (relative > 3.14159265f) {
         relative -= 6.28318531f;
     }
@@ -122,6 +122,11 @@ float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landma
         relative += 6.28318531f;
     }
     return relative;
+}
+
+float landmark_relative_bearing(const BgPlayer *player, const BgLandmark *landmark) {
+    return bearing_to_point(player->x, player->z, player->yaw, (float)landmark->x + 0.5f,
+                            (float)landmark->z + 0.5f);
 }
 
 void landmark_bearing_text(float relative, char *out, size_t size) {
