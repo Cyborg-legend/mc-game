@@ -77,7 +77,8 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(blockforge PRIVATE opengl32 gdi32 user32 shell32)
+    # winmm provides the waveOut mixer that src/audio.c drives.
+    target_link_libraries(blockforge PRIVATE opengl32 gdi32 user32 shell32 winmm)
 else()
     find_package(OpenGL QUIET)
     if(TARGET OpenGL::GL)
