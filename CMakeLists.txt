@@ -168,6 +168,13 @@ if(BUILD_TESTING)
     target_include_directories(check_framecap PRIVATE ${BFC_ROOT}/src)
     target_link_libraries(check_framecap PRIVATE m)
     add_test(NAME framecap COMMAND check_framecap)
+
+    add_executable(check_worldmeta
+        ${BFC_ROOT}/tests/check_worldmeta.c
+        ${BFC_ROOT}/src/worldmeta.c
+    )
+    target_include_directories(check_worldmeta PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME worldmeta COMMAND check_worldmeta)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

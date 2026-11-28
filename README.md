@@ -35,6 +35,10 @@ Walk, sprint, jump, inventory, drop and eat can be rebound in **Settings →
 Controls**: pick the row, press Enter, then press the new key. Backspace resets
 one row to its default. The table lives in `worlds/settings.cfg`.
 
+Each row of the world list shows a small seed-derived preview of the world, the
+realm it was last saved in and how long ago it was last played (`PLAYED 3 H
+AGO`, `NEVER PLAYED`). The stamp is written when a world is opened.
+
 Settings also cover mouse sensitivity, field of view, render distance,
 inverted look, fullscreen, a VSync toggle and a frame cap; all of them are
 saved with the bindings. The frame cap (60, 120, 144 or 240 FPS, or off) only
@@ -110,12 +114,15 @@ variation even though it is drawn as one quad.
 Worlds live in `worlds/` next to the executable:
 
 - `worlds/worlds.idx` lists the worlds, with a `.bak` copy of the previous list.
+  Each line is `id<TAB>name<TAB>seed<TAB>realm<TAB>last played`, where the last
+  field is a Unix stamp and `0` means the world has never been opened. Lists
+  written by older builds (without the stamp) still load.
 - `worlds/slot_<id>.sav`, `slot_<id>_under.sav`, `slot_<id>_cinder.sav` are the
   Upperworld, Underworld and Cinderhold saves for one world.
 - Each save keeps its previous generation as `<name>.sav.bak`. If the main file
   is ever damaged, the game loads the backup instead of refusing the world.
 - `worlds/settings.cfg` holds sensitivity, FOV, render distance, invert-look,
-  fullscreen and the key bindings.
+  fullscreen, VSync, the frame cap and the key bindings.
 - `screenshots/screenshot_NNN.bmp` is where `F2` writes 24-bit BMP captures.
 
 ## Licence

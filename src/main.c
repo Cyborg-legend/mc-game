@@ -6,6 +6,7 @@
 #include "timestep.h"
 #include "interp.h"
 #include "framecap.h"
+#include "worldmeta.h"
 
 #include <GLFW/glfw3.h>
 
@@ -15,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -70,6 +72,7 @@ typedef struct WorldEntry {
     char name[WORLD_NAME_MAX];
     uint64_t seed;
     Dimension dimension; /* realm the player last stood in */
+    uint64_t played;     /* Unix stamp of the last opening, 0 for never */
 } WorldEntry;
 
 typedef struct App {
@@ -699,6 +702,11 @@ static void world_save_path(int id, char *out, size_t size) {
     snprintf(out, size, "%s/slot_%d.sav", WORLD_DIR, id);
 }
 
+static uint64_t world_now(void) {
+    const time_t stamp = time(NULL);
+    return stamp > 0 ? (uint64_t)stamp : 0;
+}
+
 static void ensure_world_dir(void) {
     FILE *probe = fopen(WORLD_INDEX, "rb");
     if (probe) {
@@ -769,10 +777,18 @@ static void worlds_write_index(const App *app) {
     if (!file) {
         return;
     }
-    fprintf(file, "BLOCKFORGE-WORLDS 1\n");
+    fprintf(file, BG_WORLD_META_HEADER " %d\n", BG_WORLD_META_VERSION);
     for (int i = 0; i < app->world_count; ++i) {
-        fprintf(file, "%d\t%s\t%llu\t%d\n", app->worlds[i].id, app->worlds[i].name,
-                (unsigned long long)app->worlds[i].seed, (int)app->worlds[i].dimension);
+        BgWorldMeta meta;
+        meta.id = app->worlds[i].id;
+        snprintf(meta.name, sizeof(meta.name), "%s", app->worlds[i].name);
+        meta.seed = app->worlds[i].seed;
+        meta.dimension = (int)app->worlds[i].dimension;
+        meta.played = app->worlds[i].played;
+        char record[160];
+        if (worldmeta_format(&meta, record, sizeof(record))) {
+            fputs(record, file);
+        }
     }
     const bool ok = ferror(file) == 0;
     if (fclose(file) != 0 || !ok) {
@@ -804,17 +820,14 @@ static void worlds_read_index_file(App *app, const char *path) {
                 continue;
             }
         }
-        int id = 0;
-        char name[WORLD_NAME_MAX] = { 0 };
-        unsigned long long seed = 0;
-        int dimension = 0;
-        if (sscanf(line, "%d\t%23[^\t]\t%llu\t%d", &id, name, &seed, &dimension) < 2) {
+        BgWorldMeta meta;
+        if (!worldmeta_parse(line, &meta)) {
             continue;
         }
         /* A world whose realm saves all went missing is not offered any more. */
         bool any_save = false;
         for (int realm = 0; realm < REALM_COUNT; ++realm) {
-            if (world_file_exists(id, kRealms[realm])) {
+            if (world_file_exists(meta.id, kRealms[realm])) {
                 any_save = true;
                 break;
             }
@@ -824,12 +837,13 @@ static void worlds_read_index_file(App *app, const char *path) {
         }
 
         WorldEntry *entry = &app->worlds[app->world_count++];
-        entry->id = id;
-        snprintf(entry->name, sizeof(entry->name), "%s", name);
-        entry->seed = (uint64_t)seed;
-        entry->dimension = (dimension >= 0 && dimension < REALM_COUNT)
-                               ? (Dimension)dimension
+        entry->id = meta.id;
+        snprintf(entry->name, sizeof(entry->name), "%s", meta.name);
+        entry->seed = meta.seed;
+        entry->dimension = (meta.dimension >= 0 && meta.dimension < REALM_COUNT)
+                               ? (Dimension)meta.dimension
                                : BG_UPPERWORLD;
+        entry->played = meta.played;
     }
     fclose(file);
 }
@@ -904,6 +918,7 @@ static void worlds_import_legacy(App *app) {
     snprintf(entry->name, sizeof(entry->name), "Old World");
     entry->seed = 0;
     entry->dimension = BG_UPPERWORLD;
+    entry->played = 0;
     worlds_write_index(app);
 }
 
@@ -1048,6 +1063,7 @@ static void world_copy(App *app, int index) {
     snprintf(entry->name, WORLD_NAME_MAX, "%s", copy_name);
     entry->seed = app->worlds[index].seed;
     entry->dimension = app->worlds[index].dimension;
+    entry->played = 0; /* a copy is a new world until it is opened */
     app->world_count++;
     app->world_choice = app->world_count - 1;
     worlds_write_index(app);
@@ -1214,6 +1230,7 @@ static bool world_import_bundle(App *app, const char *path) {
     snprintf(entry->name, WORLD_NAME_MAX, "%s", name[0] ? name : "Imported");
     entry->seed = seed;
     entry->dimension = (Dimension)dimension;
+    entry->played = 0;
     app->world_choice = app->world_count - 1;
     worlds_write_index(app);
     return true;
@@ -1618,6 +1635,7 @@ static void start_new_world(App *app, GLFWwindow *window) {
              app->name_text[0] != '\0' ? app->name_text : "New World");
     entry->seed = seed;
     entry->dimension = app->create_dimension;
+    entry->played = world_now();
     app->active_world = app->world_count;
     app->world_count++;
     worlds_write_index(app);
@@ -1654,6 +1672,7 @@ static bool load_game(App *app, GLFWwindow *window) {
     app->active_world = index;
     app->worlds[index].seed = app->world.seed;
     app->worlds[index].dimension = app->world.dimension;
+    app->worlds[index].played = world_now();
     worlds_write_index(app);
 
     renderer_set_environment(&app->renderer, app->world.dimension);
@@ -1988,6 +2007,29 @@ static void render_title(App *app) {
     ui_free(&ui);
 }
 
+/* A seed sampled into a few flat cells: enough to tell two worlds apart at a
+ * glance without reading either save or drawing real terrain in the menu. */
+static const float kWorldTones[BG_WORLD_PREVIEW_TONES][3] = {
+    { 0.15f, 0.28f, 0.47f }, /* deep water */
+    { 0.24f, 0.42f, 0.58f }, /* shallows */
+    { 0.60f, 0.56f, 0.34f }, /* sand */
+    { 0.30f, 0.47f, 0.24f }, /* grass */
+    { 0.19f, 0.33f, 0.21f }, /* forest */
+    { 0.58f, 0.60f, 0.63f }  /* stone */
+};
+
+static void draw_world_preview(BgUi *ui, const WorldEntry *entry, float x, float y) {
+    const float cell = 8.0f;
+    for (int gz = 0; gz < BG_WORLD_PREVIEW_H; ++gz) {
+        for (int gx = 0; gx < BG_WORLD_PREVIEW_W; ++gx) {
+            const int tone = worldmeta_preview_tone(entry->seed, gx, gz);
+            const float color[4] = { kWorldTones[tone][0], kWorldTones[tone][1],
+                                     kWorldTones[tone][2], 1.0f };
+            ui_rect(ui, x + (float)gx * cell, y + (float)gz * cell, cell, cell, color);
+        }
+    }
+}
+
 static void render_worlds(App *app) {
     BgUi ui;
     memset(&ui, 0, sizeof(ui));
@@ -2032,11 +2074,25 @@ static void render_worlds(App *app) {
         } else {
             snprintf(seed, sizeof(seed), "SEED UNKNOWN");
         }
+        draw_world_preview(&ui, &app->worlds[i], r.x + 18.0f, r.y + 9.0f);
+
         const float name_shadow[4] = { 0.06f, 0.06f, 0.07f, 0.92f };
-        ui_text(&ui, r.x + 20.0f, r.y + 13.0f, 2.0f, app->worlds[i].name, name_shadow);
-        ui_text(&ui, r.x + 18.0f, r.y + 11.0f, 2.0f, app->worlds[i].name,
+        ui_text(&ui, r.x + 70.0f, r.y + 10.0f, 2.0f, app->worlds[i].name, name_shadow);
+        ui_text(&ui, r.x + 68.0f, r.y + 8.0f, 2.0f, app->worlds[i].name,
                 selected ? title : text_color);
-        ui_text(&ui, r.x + r.w - 86.0f - ui_text_width(seed, 1.5f), r.y + 16.0f, 1.5f, seed,
+
+        char ago[32];
+        char played_line[64];
+        if (app->worlds[i].played == 0) {
+            snprintf(played_line, sizeof(played_line), "NEVER PLAYED");
+        } else {
+            worldmeta_ago(app->worlds[i].played, world_now(), ago, sizeof(ago));
+            snprintf(played_line, sizeof(played_line), "PLAYED %s", ago);
+        }
+        ui_text(&ui, r.x + 68.0f, r.y + 26.0f, 1.3f, played_line,
+                selected ? text_color : muted);
+
+        ui_text(&ui, r.x + r.w - 86.0f - ui_text_width(seed, 1.5f), r.y + 9.0f, 1.5f, seed,
                 muted);
 
         /* First click arms the button, the second one erases the world. */
