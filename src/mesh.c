@@ -1,6 +1,7 @@
 #include "bg.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* Face order: +X, -X, +Y, -Y, +Z, -Z. */
 static const float kFaceNormals[6][3] = {
@@ -22,7 +23,8 @@ static const int kCornerOffsets[6][4][3] = {
     { { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } }
 };
 
-/* Tangent axes, used to place the three ambient-occlusion probes per corner. */
+/* Tangent axes, used to place the three ambient-occlusion probes per corner
+ * and as the two axes a merged face sweeps along. */
 static const int kFaceTangentU[6] = { 1, 1, 0, 0, 0, 0 };
 static const int kFaceTangentV[6] = { 2, 2, 2, 2, 1, 1 };
 
@@ -46,15 +48,9 @@ static bool reserve_indices(BgMesh *mesh, size_t *capacity, size_t needed);
 static bool emit_torch(BgMesh *mesh, int wx, int wy, int wz) {
     const float min[3] = { (float)wx + 0.42f, (float)wy, (float)wz + 0.42f };
     const float max[3] = { (float)wx + 0.58f, (float)wy + 0.62f, (float)wz + 0.58f };
-    const float tiles_per_row = 16.0f;
-    const float tile_size = 1.0f / tiles_per_row;
-    const float pad = tile_size * 0.002f;
-    const float span = tile_size - 2.0f * pad;
-    const int tile = block_tile(BG_TORCH, 0);
-    const float tu = (float)(tile % 16) * tile_size;
-    const float tv = (float)(tile / 16) * tile_size;
     const float corner_u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
     const float corner_v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    const int tile = block_tile(BG_TORCH, 0);
 
     for (int face = 0; face < 6; ++face) {
         if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
@@ -69,8 +65,10 @@ static bool emit_torch(BgMesh *mesh, int wx, int wy, int wz) {
                 vertex->pos[axis] = min[axis] + (max[axis] - min[axis]) * t;
                 vertex->normal[axis] = kFaceNormals[face][axis];
             }
-            vertex->uv[0] = tu + pad + corner_u[c] * span;
-            vertex->uv[1] = tv + pad + corner_v[c] * span;
+            vertex->uv[0] = corner_u[c];
+            vertex->uv[1] = corner_v[c];
+            vertex->tile[0] = (float)(tile % 16);
+            vertex->tile[1] = (float)(tile / 16);
             vertex->ao = 1.0f;
             vertex->light = 1.0f;
         }
@@ -82,39 +80,6 @@ static bool emit_torch(BgMesh *mesh, int wx, int wy, int wz) {
         mesh->indices[mesh->index_count++] = base + 3;
     }
     return true;
-}
-
-/* Isotropic tiles survive any quarter turn, so a field of stone or dirt can be
- * spun per block instead of repeating one stamp over and over. */
-static bool tile_rotates(BlockId block) {
-    switch (block) {
-        case BG_STONE:
-        case BG_DIRT:
-        case BG_SAND:
-        case BG_LEAVES:
-        case BG_BEDROCK:
-        case BG_EMBERSTONE:
-        case BG_ASHSOIL:
-        case BG_EMBERLODE:
-        case BG_IRONLODE:
-        case BG_PALE_QUARTZ:
-        case BG_GLOWMOSS:
-        case BG_CINDERSTONE:
-        case BG_ASHBLOCK:
-        case BG_BLOODLEAVES:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static uint32_t face_spin(int x, int y, int z, int face) {
-    uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^
-                 (uint32_t)z * 83492791u ^ (uint32_t)face * 2654435761u;
-    h ^= h >> 13;
-    h *= 0x5bd1e995u;
-    h ^= h >> 15;
-    return h & 3u;
 }
 
 static bool reserve_vertices(BgMesh *mesh, size_t *capacity, size_t needed) {
@@ -167,6 +132,177 @@ void mesh_free(BgMesh *mesh) {
     mesh->index_capacity = 0;
 }
 
+/* One exposed block face waiting to be merged into a larger quad. Two cells
+ * may only join when they agree on texture, baked light and all four corner
+ * occlusions, so a merged quad is always flat, evenly lit and evenly shaded. */
+typedef struct GreedyCell {
+    int tile;
+    float light;
+    float ao[4];
+    bool present;
+} GreedyCell;
+
+static bool cells_match(const GreedyCell *a, const GreedyCell *b) {
+    return a->present && b->present && a->tile == b->tile && a->light == b->light &&
+           a->ao[0] == b->ao[0] && a->ao[1] == b->ao[1] && a->ao[2] == b->ao[2] &&
+           a->ao[3] == b->ao[3];
+}
+
+/* Emits one rectangle of merged faces. Corners keep the per-face winding of a
+ * single quad, so culling and shading are unchanged; the UVs carry how many
+ * blocks the quad spans and the tile index rides along in its own attribute. */
+static bool emit_greedy_quad(BgMesh *mesh, int face, int slice, const int origin[3],
+                             int u0, int v0, int w, int h, const GreedyCell *cell) {
+    if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
+        !reserve_indices(mesh, &mesh->index_capacity, mesh->index_count + 6)) {
+        return false;
+    }
+
+    const int axis_d = face / 2;
+    const int axis_u = kFaceTangentU[face];
+    const int axis_v = kFaceTangentV[face];
+    const float tile_x = (float)(cell->tile % 16);
+    const float tile_y = (float)(cell->tile / 16);
+
+    const uint32_t base = (uint32_t)mesh->vertex_count;
+    for (int c = 0; c < 4; ++c) {
+        const int cu = kCornerOffsets[face][c][axis_u];
+        const int cv = kCornerOffsets[face][c][axis_v];
+        BgVertex *vertex = &mesh->vertices[mesh->vertex_count++];
+        vertex->pos[axis_u] = (float)(origin[axis_u] + u0 + cu * w);
+        vertex->pos[axis_v] = (float)(origin[axis_v] + v0 + cv * h);
+        vertex->pos[axis_d] = (float)(origin[axis_d] + slice + kCornerOffsets[face][c][axis_d]);
+        vertex->normal[0] = kFaceNormals[face][0];
+        vertex->normal[1] = kFaceNormals[face][1];
+        vertex->normal[2] = kFaceNormals[face][2];
+        vertex->uv[0] = (float)(cu * w);
+        vertex->uv[1] = (float)(cv * h);
+        vertex->tile[0] = tile_x;
+        vertex->tile[1] = tile_y;
+        vertex->ao = cell->ao[c];
+        vertex->light = cell->light;
+    }
+
+    /* Split along the darker diagonal so AO gradients stay smooth. */
+    if (cell->ao[0] + cell->ao[2] < cell->ao[1] + cell->ao[3]) {
+        mesh->indices[mesh->index_count++] = base + 1;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 3;
+        mesh->indices[mesh->index_count++] = base + 1;
+        mesh->indices[mesh->index_count++] = base + 3;
+        mesh->indices[mesh->index_count++] = base + 0;
+    } else {
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 1;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 0;
+        mesh->indices[mesh->index_count++] = base + 2;
+        mesh->indices[mesh->index_count++] = base + 3;
+    }
+    return true;
+}
+
+/* Builds the exposed-face mask for one slice of one face direction, merges it
+ * into rectangles and emits them. */
+static bool greedy_slice(const World *world, const Chunk *chunk, int face, int slice,
+                         const int origin[3], BgMesh *mesh,
+                         GreedyCell mask[CHUNK_SIZE][CHUNK_SIZE]) {
+    const int axis_d = face / 2;
+    const int axis_u = kFaceTangentU[face];
+    const int axis_v = kFaceTangentV[face];
+    const int nx = (int)kFaceNormals[face][0];
+    const int ny = (int)kFaceNormals[face][1];
+    const int nz = (int)kFaceNormals[face][2];
+    int step_u[3] = { 0, 0, 0 };
+    int step_v[3] = { 0, 0, 0 };
+    step_u[axis_u] = 1;
+    step_v[axis_v] = 1;
+
+    for (int u = 0; u < CHUNK_SIZE; ++u) {
+        for (int v = 0; v < CHUNK_SIZE; ++v) {
+            int local[3];
+            local[axis_d] = slice;
+            local[axis_u] = u;
+            local[axis_v] = v;
+            const BlockId block =
+                chunk->blocks[(local[1] * CHUNK_SIZE + local[2]) * CHUNK_SIZE + local[0]];
+            if (block == BG_AIR || block == BG_TORCH) {
+                continue;
+            }
+
+            const int wx = origin[0] + local[0];
+            const int wy = origin[1] + local[1];
+            const int wz = origin[2] + local[2];
+            const BlockId neighbor = world_get_block(world, wx + nx, wy + ny, wz + nz);
+            if (block_collidable(neighbor) || neighbor == block) {
+                continue;
+            }
+
+            GreedyCell *cell = &mask[u][v];
+            cell->present = true;
+            cell->tile = block_tile(block, face);
+            cell->light = light_factor(world, wx + nx, wy + ny, wz + nz);
+            for (int c = 0; c < 4; ++c) {
+                const int su = kCornerOffsets[face][c][axis_u] * 2 - 1;
+                const int sv = kCornerOffsets[face][c][axis_v] * 2 - 1;
+                const bool side_u = solid_at(world,
+                    wx + nx + su * step_u[0], wy + ny + su * step_u[1], wz + nz + su * step_u[2]);
+                const bool side_v = solid_at(world,
+                    wx + nx + sv * step_v[0], wy + ny + sv * step_v[1], wz + nz + sv * step_v[2]);
+                const bool diagonal = solid_at(world,
+                    wx + nx + su * step_u[0] + sv * step_v[0],
+                    wy + ny + su * step_u[1] + sv * step_v[1],
+                    wz + nz + su * step_u[2] + sv * step_v[2]);
+
+                const int occlusion = (side_u && side_v)
+                                          ? 3
+                                          : (side_u ? 1 : 0) + (side_v ? 1 : 0) + (diagonal ? 1 : 0);
+                cell->ao[c] = 1.0f - 0.2f * (float)occlusion;
+            }
+        }
+    }
+
+    for (int v = 0; v < CHUNK_SIZE; ++v) {
+        int u = 0;
+        while (u < CHUNK_SIZE) {
+            const GreedyCell *start = &mask[u][v];
+            if (!start->present) {
+                ++u;
+                continue;
+            }
+            int w = 1;
+            while (u + w < CHUNK_SIZE && cells_match(&mask[u + w][v], start)) {
+                ++w;
+            }
+            int h = 1;
+            while (v + h < CHUNK_SIZE) {
+                bool row_matches = true;
+                for (int k = 0; k < w; ++k) {
+                    if (!cells_match(&mask[u + k][v + h], start)) {
+                        row_matches = false;
+                        break;
+                    }
+                }
+                if (!row_matches) {
+                    break;
+                }
+                ++h;
+            }
+
+            if (!emit_greedy_quad(mesh, face, slice, origin, u, v, w, h, start)) {
+                return false;
+            }
+            for (int dv = 0; dv < h; ++dv) {
+                for (int du = 0; du < w; ++du) {
+                    mask[u + du][v + dv].present = false;
+                }
+            }
+            u += w;
+        }
+    }
+    return true;
+}
+
 void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
     /* Chunk meshes are always built from scratch, so drop any previous
      * pointers rather than trusting the caller's struct. */
@@ -177,137 +313,38 @@ void mesh_chunk(const World *world, const Chunk *chunk, BgMesh *mesh) {
     mesh->index_count = 0;
     mesh->index_capacity = 0;
 
-    const float origin_x = (float)(chunk->cx * CHUNK_SIZE);
-    const float origin_y = (float)(chunk->cy * CHUNK_SIZE);
-    const float origin_z = (float)(chunk->cz * CHUNK_SIZE);
+    const int origin[3] = { chunk->cx * CHUNK_SIZE, chunk->cy * CHUNK_SIZE,
+                            chunk->cz * CHUNK_SIZE };
 
-    const float tiles_per_row = 16.0f;
-    const float tile_size = 1.0f / tiles_per_row;
-    const float pad = tile_size * 0.002f;
-    const float span = tile_size - 2.0f * pad;
-    const float corner_u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
-    const float corner_v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    /* One mask reused by every slice: the merge step consumes every present
+     * cell, so it is empty again by the time the next slice needs it. */
+    GreedyCell mask[CHUNK_SIZE][CHUNK_SIZE];
+    memset(mask, 0, sizeof(mask));
 
+    /* Torches are posts, not cubes, so they skip the greedy pass. */
     for (int y = 0; y < CHUNK_SIZE; ++y) {
         for (int z = 0; z < CHUNK_SIZE; ++z) {
             for (int x = 0; x < CHUNK_SIZE; ++x) {
-                const BlockId block = chunk->blocks[(y * CHUNK_SIZE + z) * CHUNK_SIZE + x];
-                if (block == BG_AIR) {
+                if (chunk->blocks[(y * CHUNK_SIZE + z) * CHUNK_SIZE + x] != BG_TORCH) {
                     continue;
                 }
-                const int world_x = chunk->cx * CHUNK_SIZE + x;
-                const int world_y = chunk->cy * CHUNK_SIZE + y;
-                const int world_z = chunk->cz * CHUNK_SIZE + z;
-
-                if (block == BG_TORCH) {
-                    emit_torch(mesh, world_x, world_y, world_z);
-                    continue;
+                if (!emit_torch(mesh, origin[0] + x, origin[1] + y, origin[2] + z)) {
+                    return;
                 }
+            }
+        }
+    }
 
-                for (int face = 0; face < 6; ++face) {
-                    const int nx = world_x + (int)kFaceNormals[face][0];
-                    const int ny = world_y + (int)kFaceNormals[face][1];
-                    const int nz = world_z + (int)kFaceNormals[face][2];
-
-                    const BlockId neighbor = world_get_block(world, nx, ny, nz);
-                    if (block_collidable(neighbor) || neighbor == block) {
-                        continue;
-                    }
-
-                    const int tile = block_tile(block, face);
-                    const float tu = (float)(tile % 16) * tile_size;
-                    const float tv = (float)(tile / 16) * tile_size;
-                    const uint32_t spin = tile_rotates(block)
-                                              ? face_spin(world_x, world_y, world_z, face)
-                                              : 0u;
-
-                    const int axis_u = kFaceTangentU[face];
-                    const int axis_v = kFaceTangentV[face];
-                    int step_u[3] = { 0, 0, 0 };
-                    int step_v[3] = { 0, 0, 0 };
-                    step_u[axis_u] = 1;
-                    step_v[axis_v] = 1;
-
-                    float ao[4];
-                    for (int c = 0; c < 4; ++c) {
-                        const int su = kCornerOffsets[face][c][axis_u] * 2 - 1;
-                        const int sv = kCornerOffsets[face][c][axis_v] * 2 - 1;
-                        const bool side_u = solid_at(world,
-                            nx + su * step_u[0], ny + su * step_u[1], nz + su * step_u[2]);
-                        const bool side_v = solid_at(world,
-                            nx + sv * step_v[0], ny + sv * step_v[1], nz + sv * step_v[2]);
-                        const bool diagonal = solid_at(world,
-                            nx + su * step_u[0] + sv * step_v[0],
-                            ny + su * step_u[1] + sv * step_v[1],
-                            nz + su * step_u[2] + sv * step_v[2]);
-
-                        const int occlusion = (side_u && side_v)
-                                                  ? 3
-                                                  : (side_u ? 1 : 0) + (side_v ? 1 : 0) + (diagonal ? 1 : 0);
-                        ao[c] = 1.0f - 0.2f * (float)occlusion;
-                    }
-
-                    if (!reserve_vertices(mesh, &mesh->vertex_capacity, mesh->vertex_count + 4) ||
-                        !reserve_indices(mesh, &mesh->index_capacity, mesh->index_count + 6)) {
-                        return;
-                    }
-
-                    const uint32_t base = (uint32_t)mesh->vertex_count;
-                    for (int c = 0; c < 4; ++c) {
-                        BgVertex *vertex = &mesh->vertices[mesh->vertex_count++];
-                        vertex->pos[0] = origin_x + (float)(x + kCornerOffsets[face][c][0]);
-                        vertex->pos[1] = origin_y + (float)(y + kCornerOffsets[face][c][1]);
-                        vertex->pos[2] = origin_z + (float)(z + kCornerOffsets[face][c][2]);
-                        vertex->normal[0] = kFaceNormals[face][0];
-                        vertex->normal[1] = kFaceNormals[face][1];
-                        vertex->normal[2] = kFaceNormals[face][2];
-                        float u = corner_u[c];
-                        float v = corner_v[c];
-                        if (spin == 1u) {
-                            const float swap = u;
-                            u = v;
-                            v = 1.0f - swap;
-                        } else if (spin == 2u) {
-                            u = 1.0f - u;
-                            v = 1.0f - v;
-                        } else if (spin == 3u) {
-                            const float swap = u;
-                            u = 1.0f - v;
-                            v = swap;
-                        }
-                        vertex->uv[0] = tu + pad + u * span;
-                        vertex->uv[1] = tv + pad + v * span;
-                        vertex->ao = ao[c];
-                        vertex->light = light_factor(world, nx, ny, nz);
-                    }
-
-                    /* Split along the darker diagonal so AO gradients stay smooth. */
-                    if (ao[0] + ao[2] < ao[1] + ao[3]) {
-                        mesh->indices[mesh->index_count++] = base + 1;
-                        mesh->indices[mesh->index_count++] = base + 2;
-                        mesh->indices[mesh->index_count++] = base + 3;
-                        mesh->indices[mesh->index_count++] = base + 1;
-                        mesh->indices[mesh->index_count++] = base + 3;
-                        mesh->indices[mesh->index_count++] = base + 0;
-                    } else {
-                        mesh->indices[mesh->index_count++] = base + 0;
-                        mesh->indices[mesh->index_count++] = base + 1;
-                        mesh->indices[mesh->index_count++] = base + 2;
-                        mesh->indices[mesh->index_count++] = base + 0;
-                        mesh->indices[mesh->index_count++] = base + 2;
-                        mesh->indices[mesh->index_count++] = base + 3;
-                    }
-                }
+    for (int face = 0; face < 6; ++face) {
+        for (int slice = 0; slice < CHUNK_SIZE; ++slice) {
+            if (!greedy_slice(world, chunk, face, slice, origin, mesh, mask)) {
+                return;
             }
         }
     }
 }
 
 void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId skin) {
-    const float tiles_per_row = 16.0f;
-    const float tile_size = 1.0f / tiles_per_row;
-    const float pad = tile_size * 0.002f;
-    const float span = tile_size - 2.0f * pad;
     const float corner_u[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
     const float corner_v[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
 
@@ -320,8 +357,6 @@ void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId 
             return;
         }
         const int tile = block_tile(skin, face);
-        const float tu = (float)(tile % 16) * tile_size;
-        const float tv = (float)(tile / 16) * tile_size;
 
         const uint32_t base = (uint32_t)mesh->vertex_count;
         for (int c = 0; c < 4; ++c) {
@@ -331,8 +366,10 @@ void mesh_box(BgMesh *mesh, const float center[3], const float half[3], BlockId 
                 vertex->pos[axis] = center[axis] + sign * half[axis];
                 vertex->normal[axis] = kFaceNormals[face][axis];
             }
-            vertex->uv[0] = tu + pad + corner_u[c] * span;
-            vertex->uv[1] = tv + pad + corner_v[c] * span;
+            vertex->uv[0] = corner_u[c];
+            vertex->uv[1] = corner_v[c];
+            vertex->tile[0] = (float)(tile % 16);
+            vertex->tile[1] = (float)(tile / 16);
             vertex->ao = face_ao[face];
             vertex->light = 1.0f;
         }

@@ -1,6 +1,7 @@
 #include "bg.h"
 #include "render.h"
 #include "audio.h"
+#include "crash.h"
 
 #include <GLFW/glfw3.h>
 
@@ -165,38 +166,21 @@ static void on_focus(GLFWwindow *window, int focused) {
 }
 
 /* A crash report nobody can read is a crash nobody can fix, so the state is
- * written beside the worlds before the process dies. */
-static void write_crash_log(const char *reason) {
-    ensure_world_dir();
-    FILE *file = fopen("worlds/last_crash.log", "wb");
-    if (!file) {
-        return;
-    }
-    fprintf(file, "BlockForge %s crash\n", BFC_VERSION);
-    fprintf(file, "reason: %s\n", reason ? reason : "unknown");
-    fprintf(file, "realm: %s\n", dimension_name(g_app.world.dimension));
-    fprintf(file, "position: %.2f %.2f %.2f\n", (double)g_app.player.x,
-            (double)g_app.player.y, (double)g_app.player.z);
-    fprintf(file, "health: %d  quest: %u  open_gate: %d\n", g_app.player.health,
-            (unsigned)g_app.world.quest_stage, g_app.world.cinder_open ? 1 : 0);
-    fprintf(file, "world: %s\n",
-            (g_app.active_world >= 0 && g_app.active_world < g_app.world_count)
-                ? g_app.worlds[g_app.active_world].name
-                : "none");
-    fflush(file);
-    fclose(file);
-}
-
-static void on_fatal_signal(int signal_number) {
-    static volatile sig_atomic_t handling = 0;
-    if (handling) {
-        _Exit(3);
-    }
-    handling = 1;
-    char reason[48];
-    snprintf(reason, sizeof(reason), "fatal signal %d", signal_number);
-    write_crash_log(reason);
-    _Exit(3);
+ * snapshotted ahead of time; the handler itself only writes bytes. */
+static void crash_snapshot(void) {
+    BgCrashContext context;
+    context.version = BFC_VERSION;
+    context.realm = dimension_name(g_app.world.dimension);
+    context.world = (g_app.active_world >= 0 && g_app.active_world < g_app.world_count)
+                        ? g_app.worlds[g_app.active_world].name
+                        : "none";
+    context.x = g_app.player.x;
+    context.y = g_app.player.y;
+    context.z = g_app.player.z;
+    context.health = g_app.player.health;
+    context.quest_stage = (unsigned)g_app.world.quest_stage;
+    context.gate_open = g_app.world.cinder_open ? 1 : 0;
+    crash_set_context(&context);
 }
 
 static void on_glfw_error(int code, const char *description) {
@@ -3787,9 +3771,7 @@ static void draw_world(App *app) {
 }
 
 int main(void) {
-    signal(SIGSEGV, on_fatal_signal);
-    signal(SIGABRT, on_fatal_signal);
-    signal(SIGFPE, on_fatal_signal);
+    crash_install();
     glfwSetErrorCallback(on_glfw_error);
 
     if (!glfwInit()) {
@@ -3873,6 +3855,7 @@ int main(void) {
         if (g_app.toast_timer > 0.0f) {
             g_app.toast_timer -= dt;
         }
+        crash_snapshot();
 
         if (g_app.state == STATE_TITLE) {
             handle_title_input(&g_app, window);

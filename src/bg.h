@@ -358,7 +358,11 @@ int mob_drops(MobType type, BgStack out[2]);
 typedef struct BgVertex {
     float pos[3];
     float normal[3];
+    /* Local coordinates on the face, in blocks: a merged quad spans its size
+     * and the atlas tile repeats once per block. */
     float uv[2];
+    /* Atlas tile index, kept apart from the UVs so a quad can repeat it. */
+    float tile[2];
     float ao;
     float light;
 } BgVertex;

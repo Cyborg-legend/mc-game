@@ -14,6 +14,7 @@ static const char *kWorldVertex =
     "layout(location = 2) in vec2 aUV;\n"
     "layout(location = 3) in float aAO;\n"
     "layout(location = 4) in float aLight;\n"
+    "layout(location = 5) in vec2 aTile;\n"
     "uniform mat4 model;\n"
     "uniform mat4 view;\n"
     "uniform mat4 projection;\n"
@@ -21,6 +22,7 @@ static const char *kWorldVertex =
     "out vec2 vUV;\n"
     "out float vAO;\n"
     "out float vLight;\n"
+    "out vec2 vTile;\n"
     "out vec3 vWorldPos;\n"
     "void main() {\n"
     "    vec4 world = model * vec4(aPos, 1.0);\n"
@@ -29,6 +31,7 @@ static const char *kWorldVertex =
     "    vUV = aUV;\n"
     "    vAO = aAO;\n"
     "    vLight = aLight;\n"
+    "    vTile = aTile;\n"
     "    gl_Position = projection * view * world;\n"
     "}\n";
 
@@ -38,6 +41,7 @@ static const char *kWorldFragment =
     "in vec2 vUV;\n"
     "in float vAO;\n"
     "in float vLight;\n"
+    "in vec2 vTile;\n"
     "in vec3 vWorldPos;\n"
     "out vec4 FragColor;\n"
     "uniform sampler2D texAtlas;\n"
@@ -48,7 +52,10 @@ static const char *kWorldFragment =
     "uniform float fogStart;\n"
     "uniform float fogDensity;\n"
     "void main() {\n"
-    "    vec3 base = texture(texAtlas, vUV).rgb;\n"
+    "    // vUV runs 0..span across a quad, so the tile repeats once per block.\n"
+    "    vec2 local = fract(vUV);\n"
+    "    vec2 atlasUV = (vTile + clamp(local, vec2(0.002), vec2(0.998))) * 0.0625;\n"
+    "    vec3 base = texture(texAtlas, atlasUV).rgb;\n"
     "    vec3 n = normalize(vNormal);\n"
     "    float faceShade = 0.70;\n"
     "    if (n.y > 0.5) faceShade = 1.0;\n"
@@ -706,6 +713,8 @@ bool renderer_init(BgRenderer *renderer) {
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, tile));
     glBindVertexArray(0);
 
     glGenVertexArrays(1, &renderer->mob_vao);
@@ -724,6 +733,8 @@ bool renderer_init(BgRenderer *renderer) {
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, tile));
     glBindVertexArray(0);
 
     glGenVertexArrays(1, &renderer->ui_vao);
@@ -895,6 +906,8 @@ void renderer_upload_chunk(BgRenderer *renderer, uint64_t key, const BgMesh *mes
         glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, ao));
         glEnableVertexAttribArray(4);
         glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, light));
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, sizeof(BgVertex), (void *)offsetof(BgVertex, tile));
         glBindVertexArray(0);
     }
 
