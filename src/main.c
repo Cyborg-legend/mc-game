@@ -2,6 +2,7 @@
 #include "render.h"
 #include "audio.h"
 #include "crash.h"
+#include "screenshot.h"
 
 #include <GLFW/glfw3.h>
 
@@ -4020,6 +4021,46 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
     }
 }
 
+/* F2: grab the finished frame (UI included) and write it beside the saves.
+ * glReadPixels hands back bottom-up RGBA, which is exactly BMP row order. */
+static void take_screenshot(App *app, GLFWwindow *window) {
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const size_t bytes = (size_t)width * (size_t)height * 4u;
+    unsigned char *pixels = (unsigned char *)malloc(bytes);
+    if (!pixels) {
+        set_toast(app, "Not enough memory for a screenshot.");
+        return;
+    }
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+#ifdef _WIN32
+    _mkdir("screenshots");
+#else
+    mkdir("screenshots", 0755);
+#endif
+
+    char path[80];
+    const bool saved = screenshot_next_path("screenshots", path, sizeof(path)) &&
+                       screenshot_write_bmp(path, width, height, pixels);
+    free(pixels);
+
+    if (saved) {
+        char message[112];
+        snprintf(message, sizeof(message), "Saved %s", path);
+        set_toast(app, message);
+    } else {
+        set_toast(app, "The screenshot could not be saved.");
+    }
+}
+
 static void draw_world(App *app) {
     BgCamera camera;
     camera.x = app->player.x;
@@ -4126,6 +4167,10 @@ int main(void) {
         }
         crash_snapshot();
 
+        if (key_pressed(&g_app, GLFW_KEY_F2)) {
+            g_app.screenshot_pending = true;
+        }
+
         if (g_app.state == STATE_TITLE) {
             handle_title_input(&g_app, window);
         } else if (g_app.state == STATE_WORLDS) {
@@ -4182,6 +4227,12 @@ int main(void) {
             } else if (g_app.state == STATE_ENDING) {
                 render_ending(&g_app);
             }
+        }
+
+        /* Read the framebuffer after the UI is drawn but before the swap. */
+        if (g_app.screenshot_pending) {
+            g_app.screenshot_pending = false;
+            take_screenshot(&g_app, window);
         }
 
         glfwSwapBuffers(window);

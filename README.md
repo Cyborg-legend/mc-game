@@ -13,16 +13,29 @@ Cinder Alpha, then strike it into a voidstone frame to open the way to
 
 | Input | Action |
 | --- | --- |
-| `W` `A` `S` `D` | Walk |
+| `W` `A` `S` `D` | Walk (rebindable) |
 | Mouse | Look |
-| `Shift` | Sprint |
-| `Space` | Jump / swim up |
+| `Shift` | Sprint (rebindable) |
+| `Space` | Jump / swim up (rebindable) |
 | Left mouse (hold) | Mine the block under the crosshair |
 | Right mouse | Place the held block, use an item, or open a chest |
 | `1`–`9`, mouse wheel | Choose a hotbar slot |
-| `E` or `C` | Inventory and crafting |
+| `E` | Inventory and crafting (rebindable) |
+| `Q` | Drop the selected item (rebindable) |
+| `F` | Eat meat (rebindable) |
+| `T` | Sort the open chest |
+| Shift + click | Move a whole stack between the chest and your pack |
+| `F2` | Save a screenshot to `screenshots/` |
 | `F3` | Debug overlay |
 | `Esc` | Pause (saves on quit) |
+
+Walk, sprint, jump, inventory, drop and eat can be rebound in **Settings →
+Controls**: pick the row, press Enter, then press the new key. Backspace resets
+one row to its default. The table lives in `worlds/settings.cfg`.
+
+A tool's remaining life shows in its slot's wear bar, in a hover tooltip in the
+inventory and chest, and as a warning above the hotbar once it is down to its
+last quarter.
 
 Losing window focus pauses the game and writes the world out, so alt-tabbing
 is always safe.
@@ -74,6 +87,10 @@ interlaced. BMPs may be uncompressed 24- or 32-bit. A missing folder, an
 unreadable file or a wrong-sized full atlas is ignored and the painted tile is
 kept. Applied overrides are reported on stderr at startup.
 
+Every block face turns its tile by a quarter and mirrors it according to a
+hash of its world position, so a long merged wall still shows per-block
+variation even though it is drawn as one quad.
+
 ## Saves
 
 Worlds live in `worlds/` next to the executable:
@@ -83,8 +100,9 @@ Worlds live in `worlds/` next to the executable:
   Upperworld, Underworld and Cinderhold saves for one world.
 - Each save keeps its previous generation as `<name>.sav.bak`. If the main file
   is ever damaged, the game loads the backup instead of refusing the world.
-- `worlds/settings.cfg` holds sensitivity, FOV, render distance, invert-look and
-  fullscreen.
+- `worlds/settings.cfg` holds sensitivity, FOV, render distance, invert-look,
+  fullscreen and the key bindings.
+- `screenshots/screenshot_NNN.bmp` is where `F2` writes 24-bit BMP captures.
 
 ## Licence
 
