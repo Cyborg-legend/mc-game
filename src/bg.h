@@ -315,6 +315,8 @@ typedef struct BgMob {
     bool on_ground;
     bool idle;
     float x, y, z;
+    /* Position before the last fixed step, for render interpolation. */
+    float prev_x, prev_y, prev_z;
     float vx, vy, vz;
     float yaw;
     int health;
@@ -486,6 +488,8 @@ bool load_world(const char *path, World *world, BgPlayer *player);
 
 typedef struct BgDrop {
     float x, y, z;
+    /* Position before the last fixed step, for render interpolation. */
+    float prev_x, prev_y, prev_z;
     float vx, vy, vz;
     float age;
     uint16_t item;

@@ -32,6 +32,9 @@ bool world_drop_item(BgDrop *drops, int *drop_count, const BgPlayer *player, uin
     drop->x = player->x + cosf(player->yaw) * 0.7f;
     drop->y = player->y + 1.3f;
     drop->z = player->z + sinf(player->yaw) * 0.7f;
+    drop->prev_x = drop->x;
+    drop->prev_y = drop->y;
+    drop->prev_z = drop->z;
     drop->vx = cosf(player->yaw) * 2.4f;
     drop->vy = 2.4f;
     drop->vz = sinf(player->yaw) * 2.4f;
@@ -56,6 +59,10 @@ void drops_update(BgDrop *drops, int *drop_count, const World *world, BgPlayer *
         if (!drop->alive) {
             continue;
         }
+        /* Remember where this step started so frames between steps can blend. */
+        drop->prev_x = drop->x;
+        drop->prev_y = drop->y;
+        drop->prev_z = drop->z;
         drop->age += dt;
 
         drop->vy -= 22.0f * dt;

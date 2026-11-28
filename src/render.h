@@ -11,6 +11,8 @@ typedef struct BgCamera {
     float fov;
     float aspect;
     float near_plane, far_plane;
+    /* 0..1 blend between the previous and current simulation step. */
+    float alpha;
 } BgCamera;
 
 typedef struct BgChunkDraw {

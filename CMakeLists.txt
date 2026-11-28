@@ -112,6 +112,10 @@ if(BUILD_TESTING)
     )
     target_include_directories(check_timestep PRIVATE ${BFC_ROOT}/src)
     add_test(NAME timestep COMMAND check_timestep)
+
+    add_executable(check_interp ${BFC_ROOT}/tests/check_interp.c)
+    target_include_directories(check_interp PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME interpolation COMMAND check_interp)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

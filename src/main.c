@@ -4,6 +4,7 @@
 #include "crash.h"
 #include "screenshot.h"
 #include "timestep.h"
+#include "interp.h"
 
 #include <GLFW/glfw3.h>
 
@@ -110,6 +111,9 @@ typedef struct App {
     float time;
     /* Leftover time owed to the next fixed 60 Hz simulation step. */
     BgTimestep timestep;
+    /* Feet position before the last fixed step, blended with the current one
+     * when the frame rate is higher than the simulation rate. */
+    float prev_x, prev_y, prev_z;
 
     /* Settings, persisted beside the worlds. */
     BgBindings bindings;
@@ -357,6 +361,19 @@ static void track_column(App *app, uint64_t key) {
 
 static float clampf(float value, float low, float high) {
     return value < low ? low : (value > high ? high : value);
+}
+
+/* A frame draws between the last simulation step and the next one. */
+static float render_alpha(const App *app) {
+    return bg_interp_alpha(app->timestep.accum, BG_PHYSICS_STEP);
+}
+
+/* Teleports must not be blended: the camera would slide across the world. */
+static void snap_render_history(App *app) {
+    app->prev_x = app->player.x;
+    app->prev_y = app->player.y;
+    app->prev_z = app->player.z;
+    app->timestep.accum = 0.0;
 }
 
 static void set_toast(App *app, const char *text) {
@@ -1292,6 +1309,7 @@ static void place_at_rift(App *app, int cx, int cy, int cz, int axis) {
     }
     app->player.y = (float)cy;
     app->player.pitch = 0.0f;
+    snap_render_history(app);
 }
 
 /* The Cinderhold's gate is fixed in the arena's south wall, so the player
@@ -1303,6 +1321,7 @@ static void place_at_cinder_gate(App *app) {
     app->player.z = (float)CINDERHOLD_ARENA_HALF - 2.5f;
     app->player.yaw = -1.5707963f;
     app->player.pitch = 0.0f;
+    snap_render_history(app);
 }
 
 /* The pack, the hotbar choice and the health bar are what a realm change
@@ -1352,6 +1371,7 @@ static void respawn(App *app) {
         mobs_clear(&app->mobs);
         reset_streaming(app);
         stream_around_player(app);
+        snap_render_history(app);
         return;
     }
     if (app->world.dimension == BG_UNDERWORLD) {
@@ -1379,6 +1399,7 @@ static void respawn(App *app) {
     mobs_clear(&app->mobs);
     reset_streaming(app);
     stream_around_player(app);
+    snap_render_history(app);
 }
 
 static void set_cursor_captured(GLFWwindow *window, bool captured) {
@@ -1556,6 +1577,7 @@ static void update_loading(App *app, GLFWwindow *window) {
         rift_build(&app->world, 0, surface, 0, 0);
         place_at_rift(app, 0, surface, 0, 0);
     }
+    snap_render_history(app);
     app->travel_armed = false;
     mobs_clear(&app->mobs);
 
@@ -3757,6 +3779,9 @@ static void step_physics(App *app, float dt) {
     const int steps = timestep_advance(&app->timestep, (double)dt);
     for (int i = 0; i < steps; ++i) {
         const int health_before = app->player.health;
+        app->prev_x = app->player.x;
+        app->prev_y = app->player.y;
+        app->prev_z = app->player.z;
         player_update(&app->player, (float)BG_PHYSICS_STEP, &app->input, &app->bindings,
                       &app->world);
         mobs_update(&app->mobs, &app->world, &app->player, (float)BG_PHYSICS_STEP);
@@ -4096,10 +4121,20 @@ static void take_screenshot(App *app, GLFWwindow *window) {
 }
 
 static void draw_world(App *app) {
+    /* A teleport (rift, respawn, load) is not a movement to blend. */
+    const float jump_x = app->player.x - app->prev_x;
+    const float jump_y = app->player.y - app->prev_y;
+    const float jump_z = app->player.z - app->prev_z;
+    if (jump_x * jump_x + jump_y * jump_y + jump_z * jump_z > 16.0f) {
+        snap_render_history(app);
+    }
+    const float alpha = render_alpha(app);
+
     BgCamera camera;
-    camera.x = app->player.x;
-    camera.y = app->player.y + EYE_HEIGHT;
-    camera.z = app->player.z;
+    camera.x = bg_lerp(app->prev_x, app->player.x, alpha);
+    camera.y = bg_lerp(app->prev_y, app->player.y, alpha) + EYE_HEIGHT;
+    camera.z = bg_lerp(app->prev_z, app->player.z, alpha);
+    camera.alpha = alpha;
     camera.yaw = app->player.yaw;
     camera.pitch = app->player.pitch;
     camera.fov = app->fov;

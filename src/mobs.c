@@ -265,6 +265,9 @@ static void place_mob(BgMob *mob, MobType type, float x, float y, float z,
     mob->x = x;
     mob->y = y;
     mob->z = z;
+    mob->prev_x = x;
+    mob->prev_y = y;
+    mob->prev_z = z;
     mob->health = mob_health(type);
     mob->wander_timer = 0.5f + rand_unit(mobs) * 2.0f;
     mob->wander_yaw = rand_unit(mobs) * 6.2831853f;
@@ -665,6 +668,10 @@ void mobs_update(BgMobWorld *mobs, World *world, BgPlayer *player, float dt) {
         if (!mob->alive) {
             continue;
         }
+        /* Remember where this step started so frames between steps can blend. */
+        mob->prev_x = mob->x;
+        mob->prev_y = mob->y;
+        mob->prev_z = mob->z;
         if (mob->hurt_timer > 0.0f) {
             mob->hurt_timer -= dt;
         }

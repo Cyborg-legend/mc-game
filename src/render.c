@@ -1,6 +1,7 @@
 #include "render.h"
 #include "texture.h"
 #include "shaders.h"
+#include "interp.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1326,16 +1327,21 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
             skin = BG_PALE_QUARTZ;
         }
 
+        /* Draw between the last two fixed steps so a fast display stays smooth. */
+        const float mx = bg_lerp(mob->prev_x, mob->x, camera->alpha);
+        const float my = bg_lerp(mob->prev_y, mob->y, camera->alpha);
+        const float mz = bg_lerp(mob->prev_z, mob->z, camera->alpha);
+
         const float body_half[3] = { half, height * 0.31f, half * 0.78f };
-        const float body_center[3] = { mob->x, mob->y + height * 0.46f, mob->z };
+        const float body_center[3] = { mx, my + height * 0.46f, mz };
         mesh_box(mesh, body_center, body_half, skin);
 
         const float head_half[3] = { half * 0.52f, height * 0.18f, half * 0.52f };
         const float forward = half * 0.78f;
         const float head_center[3] = {
-            mob->x + cosf(mob->yaw) * forward,
-            mob->y + height * 0.86f,
-            mob->z + sinf(mob->yaw) * forward
+            mx + cosf(mob->yaw) * forward,
+            my + height * 0.86f,
+            mz + sinf(mob->yaw) * forward
         };
         mesh_box(mesh, head_center, head_half,
                  (type == MOB_ASH_WISP || type == MOB_CINDER_SOVEREIGN) ? BG_MAGMA : skin);
@@ -1409,7 +1415,11 @@ void renderer_draw_drops(BgRenderer *renderer, const BgCamera *camera, const BgD
         }
         const float bob = sinf(drop->age * 2.6f) * 0.06f;
         const float half[3] = { 0.13f, 0.13f, 0.13f };
-        const float center[3] = { drop->x, drop->y + 0.2f + bob, drop->z };
+        const float center[3] = {
+            bg_lerp(drop->prev_x, drop->x, camera->alpha),
+            bg_lerp(drop->prev_y, drop->y, camera->alpha) + 0.2f + bob,
+            bg_lerp(drop->prev_z, drop->z, camera->alpha)
+        };
         mesh_box(mesh, center, half, skin);
         drawn++;
     }
