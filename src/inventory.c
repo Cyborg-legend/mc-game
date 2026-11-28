@@ -268,6 +268,120 @@ bool inventory_add(BgStack *slots, uint16_t item, int count) {
     return count == 0;
 }
 
+/* ------------------------------------------------------------- tidying */
+
+static bool stack_before(const BgStack *a, const BgStack *b) {
+    if (a->item != b->item) {
+        return a->item < b->item;
+    }
+    /* Fresh tools sit above worn ones of the same kind. */
+    return a->damage < b->damage;
+}
+
+/* Two stacks may merge only when they are the same item and equally worn, so
+ * sorting never quietly repairs or averages a pickaxe's damage. */
+static bool stack_mergeable(const BgStack *a, const BgStack *b) {
+    return a->item == b->item && a->damage == b->damage && a->count > 0 && b->count > 0 &&
+           b->count < item_max_stack(b->item);
+}
+
+static void sort_table(BgStack *slots, int count, BgStack *scratch) {
+    if (!slots || count <= 0 || !scratch) {
+        return;
+    }
+
+    int filled = 0;
+    for (int i = 0; i < count; ++i) {
+        if (slots[i].count > 0 && slots[i].item != BG_AIR && filled < count) {
+            scratch[filled++] = slots[i];
+        }
+    }
+
+    for (int i = 1; i < filled; ++i) {
+        const BgStack key = scratch[i];
+        int j = i - 1;
+        while (j >= 0 && stack_before(&key, &scratch[j])) {
+            scratch[j + 1] = scratch[j];
+            --j;
+        }
+        scratch[j + 1] = key;
+    }
+
+    memset(slots, 0, sizeof(BgStack) * (size_t)count);
+    for (int i = 0; i < filled; ++i) {
+        BgStack stack = scratch[i];
+        const int maximum = item_max_stack(stack.item);
+        for (int j = 0; j < count && stack.count > 0; ++j) {
+            if (!stack_mergeable(&stack, &slots[j])) {
+                continue;
+            }
+            const int room = maximum - slots[j].count;
+            const int moved = room < stack.count ? room : stack.count;
+            slots[j].count = (uint8_t)(slots[j].count + moved);
+            stack.count = (uint8_t)(stack.count - moved);
+        }
+        for (int j = 0; j < count && stack.count > 0; ++j) {
+            if (slots[j].count == 0) {
+                slots[j] = stack;
+                stack.count = 0;
+            }
+        }
+    }
+}
+
+void inventory_sort(BgStack *slots, int count) {
+    BgStack scratch[INVENTORY_SLOTS];
+    if (count > INVENTORY_SLOTS) {
+        count = INVENTORY_SLOTS;
+    }
+    sort_table(slots, count, scratch);
+}
+
+void container_sort(BgContainer *container) {
+    if (!container) {
+        return;
+    }
+    BgStack scratch[CHEST_SLOTS];
+    sort_table(container->slots, CHEST_SLOTS, scratch);
+}
+
+int inventory_add_stack(BgStack *slots, BgStack *source) {
+    if (!slots || !source || source->item == BG_AIR || source->count == 0) {
+        return 0;
+    }
+    const int maximum = item_max_stack(source->item);
+    int moved_total = 0;
+
+    for (int i = 0; i < INVENTORY_SLOTS && source->count > 0; ++i) {
+        if (slots[i].item != source->item || slots[i].damage != source->damage ||
+            slots[i].count >= maximum) {
+            continue;
+        }
+        const int room = maximum - slots[i].count;
+        const int moved = room < (int)source->count ? room : (int)source->count;
+        slots[i].count = (uint8_t)(slots[i].count + moved);
+        source->count = (uint8_t)(source->count - moved);
+        moved_total += moved;
+    }
+    for (int i = 0; i < INVENTORY_SLOTS && source->count > 0; ++i) {
+        if (slots[i].count != 0) {
+            continue;
+        }
+        const int moved = maximum < (int)source->count ? maximum : (int)source->count;
+        slots[i].item = source->item;
+        slots[i].damage = source->damage;
+        slots[i].count = (uint8_t)moved;
+        source->count = (uint8_t)(source->count - moved);
+        moved_total += moved;
+    }
+
+    if (source->count == 0) {
+        source->item = BG_AIR;
+        source->damage = 0;
+    }
+    return moved_total;
+}
+
 bool inventory_remove(BgStack *slots, uint16_t item, int count) {
     if (count <= 0) {
         return true;

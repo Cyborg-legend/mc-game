@@ -259,8 +259,19 @@ bool item_wear(BgStack *stack, int amount);
 
 int inventory_count(const BgStack *slots, uint16_t item);
 bool inventory_add(BgStack *slots, uint16_t item, int count);
+
+/* Moves as much of a stack as fits, wear included, and returns how many items
+ * moved; the source keeps whatever did not fit. */
+int inventory_add_stack(BgStack *slots, BgStack *source);
 bool inventory_remove(BgStack *slots, uint16_t item, int count);
 void inventory_clear(BgStack *slots);
+
+/* Packs the hotbar plus the backpack: matching stacks merge, then everything
+ * is ordered blocks-first by item id (damaged tools by remaining wear). */
+void inventory_sort(BgStack *slots, int count);
+
+/* The same tidy-up for a chest, so Ctrl-free storage stays organised. */
+void container_sort(BgContainer *container);
 
 /* ---- Crafting -------------------------------------------------------- */
 

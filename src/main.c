@@ -2639,13 +2639,16 @@ static void stash_cursor(App *app) {
     if (app->cursor.count == 0) {
         return;
     }
-    if (!inventory_add(app->player.inventory, app->cursor.item, app->cursor.count)) {
+    /* Keeps a carried tool's wear; anything that does not fit is thrown down
+     * rather than vanishing. */
+    inventory_add_stack(app->player.inventory, &app->cursor);
+    if (app->cursor.count > 0) {
         world_drop_item(app->drops, &app->drop_count, &app->player, app->cursor.item,
                         app->cursor.count);
+        app->cursor.item = BG_AIR;
+        app->cursor.count = 0;
+        app->cursor.damage = 0;
     }
-    app->cursor.item = BG_AIR;
-    app->cursor.count = 0;
-    app->cursor.damage = 0;
 }
 
 static void throw_selected(App *app) {
@@ -2763,6 +2766,16 @@ static void handle_inventory_input(App *app, GLFWwindow *window) {
 
 /* --------------------------------------------------------------- chest */
 
+static UiRect chest_sort_rect(const App *app) {
+    const UiRect panel = chest_panel_rect(app);
+    UiRect r;
+    r.w = 116.0f;
+    r.h = 28.0f;
+    r.x = panel.x + panel.w - r.w - 16.0f;
+    r.y = panel.y + 13.0f;
+    return r;
+}
+
 static void render_chest(App *app) {
     if (app->open_chest < 0 || (size_t)app->open_chest >= app->world.container_count) {
         return;
@@ -2789,6 +2802,8 @@ static void render_chest(App *app) {
     const float text_color[4] = { 0.90f, 0.92f, 0.96f, 1.0f };
     const float muted[4] = { 0.60f, 0.64f, 0.72f, 1.0f };
     draw_shadowed_centered(&ui, width * 0.5f, panel.y + 12.0f, 3.0f, "CHEST", title);
+    const UiRect sort = chest_sort_rect(app);
+    draw_button(&ui, sort.x, sort.y, sort.w, sort.h, 1.5f, "SORT (T)", false, true);
 
     for (int i = 0; i < CHEST_SLOTS; ++i) {
         const UiRect r = chest_slot_rect(app, i);
@@ -2828,10 +2843,10 @@ static void render_chest(App *app) {
     }
 
     ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 76.0f, 1.5f,
-                     "CLICK A CHEST SLOT TO TAKE IT   CLICK A PACK SLOT TO STORE IT",
+                     "CLICK TAKES OR STORES   SHIFT CLICK MOVES THE WHOLE STACK",
                      text_color);
     ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 52.0f, 1.5f,
-                     "E OR ESC CLOSES THE CHEST", muted);
+                     "T SORTS THE CHEST   INVENTORY KEY OR ESC CLOSES IT", muted);
     if (app->toast_timer > 0.0f) {
         ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 100.0f, 1.6f, app->toast,
                          title);
@@ -2919,12 +2934,37 @@ static void handle_chest_input(App *app, GLFWwindow *window) {
     }
     BgContainer *container = &app->world.containers[app->open_chest];
 
+    if (key_pressed(app, GLFW_KEY_T) ||
+        (app->input.mouse[0] && ui_hit(chest_sort_rect(app), app->mouse_x, app->mouse_y))) {
+        container_sort(container);
+        audio_play(BG_SOUND_CLICK);
+        set_toast(app, "Chest sorted.");
+        return;
+    }
+
+    const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                       glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+
     if (app->input.mouse[0]) {
         for (int i = 0; i < CHEST_SLOTS; ++i) {
             if (!ui_hit(chest_slot_rect(app, i), app->mouse_x, app->mouse_y)) {
                 continue;
             }
             BgStack *stack = &container->slots[i];
+            if (shift) {
+                /* Shift-click sends a whole stack (or the cursor's load) to
+                 * the pack without splitting it into single clicks. */
+                BgStack *source = app->cursor.count > 0 ? &app->cursor : stack;
+                if (source->count == 0) {
+                    return;
+                }
+                if (inventory_add_stack(app->player.inventory, source) == 0) {
+                    set_toast(app, "Your pack is full.");
+                } else {
+                    audio_play(BG_SOUND_PICKUP);
+                }
+                return;
+            }
             if (app->cursor.count > 0) {
                 /* A stack on the cursor goes into the chest, stacking or swapping. */
                 if (stack->count == 0) {
@@ -2948,12 +2988,12 @@ static void handle_chest_input(App *app, GLFWwindow *window) {
                     app->cursor = swap;
                 }
                 audio_play(BG_SOUND_CLICK);
-            } else if (stack->count > 0 &&
-                       inventory_add(app->player.inventory, stack->item, stack->count)) {
-                stack->item = BG_AIR;
-                stack->count = 0;
-                stack->damage = 0;
-                audio_play(BG_SOUND_PICKUP);
+            } else if (stack->count > 0) {
+                if (inventory_add_stack(app->player.inventory, stack) == 0) {
+                    set_toast(app, "Your pack is full.");
+                } else {
+                    audio_play(BG_SOUND_PICKUP);
+                }
             }
             return;
         }
@@ -2962,7 +3002,10 @@ static void handle_chest_input(App *app, GLFWwindow *window) {
                 continue;
             }
             BgStack *slot = &app->player.inventory[i];
-            if (app->cursor.count > 0) {
+            if (shift) {
+                chest_store(app, container,
+                            app->cursor.count > 0 ? &app->cursor : slot);
+            } else if (app->cursor.count > 0) {
                 inventory_click(app, slot, false);
             } else {
                 chest_store(app, container, slot);
