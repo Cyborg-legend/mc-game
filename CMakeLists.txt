@@ -105,6 +105,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(check_shader_variation PRIVATE ${BFC_ROOT}/src)
     add_test(NAME shader_variation COMMAND check_shader_variation)
+
+    add_executable(check_timestep
+        ${BFC_ROOT}/tests/check_timestep.c
+        ${BFC_ROOT}/src/timestep.c
+    )
+    target_include_directories(check_timestep PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME timestep COMMAND check_timestep)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

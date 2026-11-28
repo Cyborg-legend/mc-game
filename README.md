@@ -23,7 +23,7 @@ Cinder Alpha, then strike it into a voidstone frame to open the way to
 | `E` | Inventory and crafting (rebindable) |
 | `Q` | Drop the selected item (rebindable) |
 | `F` | Eat meat (rebindable) |
-| `T` | Sort the open chest |
+| `T` | Sort the open chest, or your pack |
 | Shift + click | Move a whole stack between the chest and your pack |
 | `F2` | Save a screenshot to `screenshots/` |
 | `F3` | Debug overlay |
@@ -65,6 +65,10 @@ cmake -B build -S .
 cmake --build build
 ./build/blockforge
 ```
+
+The headless checks in `tests/` need no window or GPU. They build alongside the
+game (`-DBUILD_TESTING=ON` is the default) and run with
+`ctest --test-dir build --output-on-failure`.
 
 On Windows, GLFW and GLEW are linked statically, so `blockforge.exe` runs on
 its own with no DLLs beside it. Every push to `main` builds the exe and a

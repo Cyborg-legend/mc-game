@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "crash.h"
 #include "screenshot.h"
+#include "timestep.h"
 
 #include <GLFW/glfw3.h>
 
@@ -107,6 +108,8 @@ typedef struct App {
     float toast_timer;
     int width, height;
     float time;
+    /* Leftover time owed to the next fixed 60 Hz simulation step. */
+    BgTimestep timestep;
 
     /* Settings, persisted beside the worlds. */
     BgBindings bindings;
@@ -3748,6 +3751,23 @@ static void strike_emberheart(App *app, bool looking, BlockId looked, int bx, in
     }
 }
 
+/* Player movement, mobs and loose items all run on the fixed clock. One-shot
+ * key actions stay per frame so a press is never handled twice. */
+static void step_physics(App *app, float dt) {
+    const int steps = timestep_advance(&app->timestep, (double)dt);
+    for (int i = 0; i < steps; ++i) {
+        const int health_before = app->player.health;
+        player_update(&app->player, (float)BG_PHYSICS_STEP, &app->input, &app->bindings,
+                      &app->world);
+        mobs_update(&app->mobs, &app->world, &app->player, (float)BG_PHYSICS_STEP);
+        drops_update(app->drops, &app->drop_count, &app->world, &app->player,
+                     (float)BG_PHYSICS_STEP);
+        if (app->player.health < health_before) {
+            audio_play(BG_SOUND_HURT);
+        }
+    }
+}
+
 static void update_playing(App *app, float dt, GLFWwindow *window) {
     /* Dead: the world is frozen under the card until the timer runs out. */
     if (app->death_timer > 0.0f) {
@@ -3836,7 +3856,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         }
     }
 
-    player_update(&app->player, dt, &app->input, &app->bindings, &app->world);
+    step_physics(app, dt);
 
     if (app->input.mouse_held[0]) {
         const int mob_index = mobs_pick(&app->mobs, &app->world, &app->player, 4.0f);
@@ -3962,13 +3982,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         }
     }
 
-    const int health_before = app->player.health;
-    mobs_update(&app->mobs, &app->world, &app->player, dt);
-    drops_update(app->drops, &app->drop_count, &app->world, &app->player, dt);
     quest_check(app);
-    if (app->player.health < health_before) {
-        audio_play(BG_SOUND_HURT);
-    }
 
     /* The world keeps its own clock, so a save restores the same hour. */
     app->world.time_of_day += dt / DAY_LENGTH;
