@@ -6,6 +6,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc libglfw3-dev libglew-dev libgl1-mesa-dev
+
+      # The headless checks live in tests/ and need no GPU; this also proves
+      # the game configures and builds with the real Linux GL packages.
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run headless checks
+        run: ctest --test-dir build --output-on-failure
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -71,6 +92,10 @@ jobs:
       - name: Build
         shell: pwsh
         run: cmake --build build --config Release --parallel
+
+      - name: Run headless checks
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure
 
       # GLFW and GLEW are linked statically, so the exe stands alone and the
       # zip is what a player downloads.
