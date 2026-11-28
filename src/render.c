@@ -3,6 +3,7 @@
 #include "shaders.h"
 #include "interp.h"
 #include "effects.h"
+#include "gltrace.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -600,8 +601,26 @@ static GLuint build_atlas(void) {
 
 /* ------------------------------------------------------------- renderer */
 
+/* Driver messages are rare but valuable: a shader link warning or a driver
+ * reset right before a crash explains the fault better than a position does.
+ * The ring lives in gltrace.c so it can be tested without a GPU. */
+static void GLAPIENTRY on_gl_message(GLenum source, GLenum type, GLuint id, GLenum severity,
+                                     GLsizei length, const GLchar *message,
+                                     const void *user) {
+    (void)source;
+    (void)type;
+    (void)id;
+    (void)length;
+    (void)user;
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) {
+        return;
+    }
+    gltrace_add(message);
+}
+
 bool renderer_init(BgRenderer *renderer) {
     memset(renderer, 0, sizeof(*renderer));
+    gltrace_clear();
 
     glewExperimental = GL_TRUE;
     const GLenum status = glewInit();
@@ -620,6 +639,19 @@ bool renderer_init(BgRenderer *renderer) {
     if (!GLEW_VERSION_3_3) {
         fprintf(stderr, "OpenGL 3.3 is required but the driver does not expose it\n");
         return false;
+    }
+
+    /* Name the driver in the crash report even if it never says anything. */
+    char banner[BG_GLTRACE_TEXT];
+    snprintf(banner, sizeof(banner), "driver %s | %s", version ? version : "unknown",
+             device ? device : "unknown");
+    gltrace_add(banner);
+
+    /* Debug output needs GL 4.3 or KHR_debug; a 3.3-only driver just has no
+     * messages to give, so this stays optional. */
+    if (GLEW_VERSION_4_3 || GLEW_KHR_debug) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glDebugMessageCallback(on_gl_message, NULL);
     }
 
     renderer->program = link_program(shader_world_vertex(), shader_world_fragment());

@@ -11,6 +11,9 @@ typedef struct BgCrashContext {
     int health;
     unsigned quest_stage;
     int gate_open;
+    /* Recent GPU driver messages, already formatted as lines (see gltrace.h).
+     * Empty when the driver sent nothing worth keeping. */
+    const char *gl_trace;
 } BgCrashContext;
 
 /* Formats and stores the context. Call it from normal game code (once a

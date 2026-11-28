@@ -23,7 +23,7 @@
 /* Written beside the worlds, which the game creates at startup: a handler
  * cannot make directories, so a report is skipped if the folder is missing. */
 #define CRASH_PATH "worlds/last_crash.log"
-#define CRASH_TEXT_MAX 512
+#define CRASH_TEXT_MAX 1024
 
 /* The report header is formatted ahead of time, in ordinary code, because
  * snprintf and friends are not safe to call once a signal has landed. */
@@ -44,12 +44,14 @@ void crash_set_context(const BgCrashContext *context) {
                                 "position: %.2f %.2f %.2f\n"
                                 "health: %d\n"
                                 "quest: %u  gate: %d\n"
-                                "world: %s\n",
+                                "world: %s\n"
+                                "%s",
                                 context->version ? context->version : "?",
                                 context->realm ? context->realm : "?",
                                 (double)context->x, (double)context->y, (double)context->z,
                                 context->health, context->quest_stage, context->gate_open,
-                                context->world ? context->world : "none");
+                                context->world ? context->world : "none",
+                                context->gl_trace ? context->gl_trace : "");
     if (length <= 0) {
         s_head_len = 0;
         return;

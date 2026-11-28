@@ -175,6 +175,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(check_worldmeta PRIVATE ${BFC_ROOT}/src)
     add_test(NAME worldmeta COMMAND check_worldmeta)
+
+    add_executable(check_gltrace
+        ${BFC_ROOT}/tests/check_gltrace.c
+        ${BFC_ROOT}/src/gltrace.c
+    )
+    target_include_directories(check_gltrace PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME gltrace COMMAND check_gltrace)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

@@ -7,6 +7,7 @@
 #include "interp.h"
 #include "framecap.h"
 #include "worldmeta.h"
+#include "gltrace.h"
 
 #include <GLFW/glfw3.h>
 
@@ -238,6 +239,10 @@ static void crash_snapshot(void) {
     context.health = g_app.player.health;
     context.quest_stage = (unsigned)g_app.world.quest_stage;
     context.gate_open = g_app.world.cinder_open ? 1 : 0;
+    /* Copied into the header now, so a fault elsewhere cannot walk the window. */
+    char trace[BG_GLTRACE_SLOTS * (BG_GLTRACE_TEXT + 6) + 1];
+    gltrace_append(trace, sizeof(trace));
+    context.gl_trace = trace;
     crash_set_context(&context);
 }
 

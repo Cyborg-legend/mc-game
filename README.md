@@ -123,6 +123,9 @@ Worlds live in `worlds/` next to the executable:
   is ever damaged, the game loads the backup instead of refusing the world.
 - `worlds/settings.cfg` holds sensitivity, FOV, render distance, invert-look,
   fullscreen, VSync, the frame cap and the key bindings.
+- `worlds/last_crash.log` is written on a fatal signal. It names the build,
+  realm, position, health, quest stage and world, and includes the OpenGL
+  driver string plus the last few messages the driver sent.
 - `screenshots/screenshot_NNN.bmp` is where `F2` writes 24-bit BMP captures.
 
 ## Licence
