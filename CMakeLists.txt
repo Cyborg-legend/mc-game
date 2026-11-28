@@ -182,6 +182,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(check_gltrace PRIVATE ${BFC_ROOT}/src)
     add_test(NAME gltrace COMMAND check_gltrace)
+
+    add_executable(check_loot
+        ${BFC_ROOT}/tests/check_loot.c
+        ${BFC_ROOT}/src/loot.c
+    )
+    target_include_directories(check_loot PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME loot COMMAND check_loot)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

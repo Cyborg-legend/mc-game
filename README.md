@@ -11,6 +11,11 @@ Cinder Alpha, then strike it into a voidstone frame to open the way to
 slam the floor, a magma ring fills around the blast radius: the lit arc shows
 how much of its wind-up is left, and the ring marks where the danger ends.
 
+Every Sovereign kill leaves a **Cinder Core**. Reforge it at a crafting table
+with three Ember Shards and two Sticks for the **Sovereign Pick**: the same
+tier as the Ember Pick but about 40% faster and far longer-lived, so the boss
+finally pays out something to play with.
+
 ## Controls
 
 | Input | Action |

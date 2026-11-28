@@ -2537,6 +2537,11 @@ static void quest_objective(const App *app, char *out, size_t size) {
                 snprintf(out, size, "THE EMBERHEART  -  STRIKE IT ON A RIFT FRAME BELOW");
             } else if (!app->world.cinder_boss_defeated) {
                 snprintf(out, size, "THE EMBERHEART  -  THE CINDERHOLD AWAITS");
+            } else if (inventory_count(app->player.inventory, BG_ITEM_CINDER_CORE) > 0) {
+                snprintf(out, size,
+                         "THE CINDERHOLD  -  REFORGE THE CORE AT A CRAFTING TABLE");
+            } else if (inventory_count(app->player.inventory, BG_ITEM_SOVEREIGN_PICK) > 0) {
+                snprintf(out, size, "THE CINDERHOLD  -  THE HOLD IS QUIET. BUILD.");
             } else {
                 snprintf(out, size, "THE EMBERHEART  -  YOURS");
             }
@@ -2904,6 +2909,8 @@ static void repair_selected(App *app) {
         material = BG_PLANKS;
     } else if (stack->item == BG_ITEM_STONE_PICK) {
         material = BG_STONE;
+    } else if (stack->item == BG_ITEM_SOVEREIGN_PICK) {
+        material = BG_ITEM_CINDER_CORE;
     }
     if (inventory_count(app->player.inventory, material) <= 0) {
         char message[96];
@@ -3975,7 +3982,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                 const float dir_z = sinf(app->player.yaw);
                 audio_play(BG_SOUND_HIT);
                 if (mobs_damage(&app->mobs, mob_index, 6, dir_x, dir_z, &killed)) {
-                    BgStack mob_drops_out[2];
+                    BgStack mob_drops_out[MAX_MOB_DROPS];
                     const int drop_total = mob_drops(killed, mob_drops_out);
                     for (int i = 0; i < drop_total; ++i) {
                         if (killed == MOB_CINDER_ALPHA ||
@@ -4001,7 +4008,9 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
                         app->world.cinder_boss_defeated = true;
                         save_active_world(app);
                         audio_play(BG_SOUND_WIN);
-                        set_toast(app, "The Cinder Sovereign is unmade. The hold is quiet.");
+                        set_toast(app,
+                                  "The Sovereign is unmade. Its core still burns: "
+                                  "reforge it at a table.");
                     } else {
                         audio_play(BG_SOUND_BREAK);
                     }

@@ -1322,6 +1322,12 @@ void item_color(uint16_t item, float rgb[3]) {
         case BG_ITEM_MEAT:
             rgb[0] = 0.78f; rgb[1] = 0.26f; rgb[2] = 0.26f;
             break;
+        case BG_ITEM_CINDER_CORE:
+            rgb[0] = 0.95f; rgb[1] = 0.32f; rgb[2] = 0.14f;
+            break;
+        case BG_ITEM_SOVEREIGN_PICK:
+            rgb[0] = 0.95f; rgb[1] = 0.74f; rgb[2] = 0.28f;
+            break;
         default:
             rgb[0] = 0.30f; rgb[1] = 0.30f; rgb[2] = 0.32f;
             break;

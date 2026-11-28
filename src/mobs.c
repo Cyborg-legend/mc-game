@@ -1,4 +1,5 @@
 #include "bg.h"
+#include "loot.h"
 #include "audio.h"
 
 #include <math.h>
@@ -790,35 +791,8 @@ bool mobs_damage(BgMobWorld *mobs, int index, int damage, float dir_x, float dir
     return false;
 }
 
-int mob_drops(MobType type, BgStack out[2]) {
-    switch (type) {
-        case MOB_GRAZER:
-            out[0].item = BG_ITEM_MEAT;
-            out[0].count = 2;
-            return 1;
-        case MOB_CINDER_HOUND:
-            out[0].item = BG_ITEM_EMBER_SHARD;
-            out[0].count = 1;
-            out[1].item = BG_ITEM_ASH_DUST;
-            out[1].count = 2;
-            return 2;
-        case MOB_ASH_WISP:
-            out[0].item = BG_ITEM_ASH_DUST;
-            out[0].count = 2;
-            return 1;
-        case MOB_CINDER_ALPHA:
-            out[0].item = BG_ITEM_EMBERHEART;
-            out[0].count = 1;
-            out[1].item = BG_ITEM_EMBER_SHARD;
-            out[1].count = 4;
-            return 2;
-        case MOB_CINDER_SOVEREIGN:
-            out[0].item = BG_ITEM_EMBER_SHARD;
-            out[0].count = 8;
-            out[1].item = BG_LUMENSTONE;
-            out[1].count = 6;
-            return 2;
-        default:
-            return 0;
-    }
+/* The table itself is pure and lives in loot.c so it can be checked without a
+ * world; this keeps the old entry point for callers that already have one. */
+int mob_drops(MobType type, BgStack out[MAX_MOB_DROPS]) {
+    return loot_mob_drops(type, out);
 }

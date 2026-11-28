@@ -28,6 +28,8 @@ const char *item_name(uint16_t item) {
         case BG_ITEM_EMBER_PICK:  return "Ember Pickaxe";
         case BG_ITEM_RIFT_KEY:    return "Rift Key";
         case BG_ITEM_EMBERHEART:  return "Emberheart";
+        case BG_ITEM_CINDER_CORE: return "Cinder Core";
+        case BG_ITEM_SOVEREIGN_PICK: return "Sovereign Pick";
         default:                  return "Unknown";
     }
 }
@@ -97,6 +99,7 @@ int item_pick_tier(uint16_t item) {
         case BG_ITEM_WOOD_PICK:  return 1;
         case BG_ITEM_STONE_PICK: return 2;
         case BG_ITEM_EMBER_PICK: return 3;
+        case BG_ITEM_SOVEREIGN_PICK: return 3;
         default:                 return 0;
     }
 }
@@ -179,6 +182,10 @@ float block_hardness(BlockId block) {
 }
 
 float item_pick_speed(uint16_t item) {
+    /* The Sovereign Pick shares the Ember Pick's tier but bites much faster. */
+    if (item == BG_ITEM_SOVEREIGN_PICK) {
+        return 9.0f;
+    }
     switch (item_pick_tier(item)) {
         case 1:  return 2.2f;
         case 2:  return 4.0f;
@@ -196,6 +203,7 @@ int item_durability_max(uint16_t item) {
         case BG_ITEM_WOOD_PICK:  return 60;
         case BG_ITEM_STONE_PICK: return 130;
         case BG_ITEM_EMBER_PICK: return 250;
+        case BG_ITEM_SOVEREIGN_PICK: return 255;
         default:                 return 0;
     }
 }
@@ -466,6 +474,12 @@ static const BgRecipe kRecipes[] = {
     {
         { { BG_ITEM_EMBER_SHARD, 3 }, { BG_ITEM_ASH_DUST, 2 } }, 2,
         { BG_ITEM_RIFT_KEY, 1, 0 }, true
+    },
+    /* The boss's trophy is the only way to this tier, so the Sovereign's
+     * drop opens real play instead of just topping up a stock. */
+    {
+        { { BG_ITEM_CINDER_CORE, 1 }, { BG_ITEM_EMBER_SHARD, 3 }, { BG_ITEM_STICK, 2 } }, 3,
+        { BG_ITEM_SOVEREIGN_PICK, 1, 0 }, true
     }
 };
 

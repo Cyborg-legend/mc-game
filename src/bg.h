@@ -216,6 +216,10 @@ typedef enum {
     BG_ITEM_EMBER_PICK,
     BG_ITEM_RIFT_KEY,
     BG_ITEM_EMBERHEART,
+    /* Post-boss rewards. Appended so the ids stored in existing saves keep
+     * meaning what they meant. */
+    BG_ITEM_CINDER_CORE,
+    BG_ITEM_SOVEREIGN_PICK,
     BG_ITEM_COUNT
 } ItemId;
 
@@ -366,7 +370,8 @@ bool mobs_damage(BgMobWorld *mobs, int index, int damage, float dir_x, float dir
                  MobType *killed_type);
 
 /* Drops for a dead mob; returns how many entries of out are filled. */
-int mob_drops(MobType type, BgStack out[2]);
+#define MAX_MOB_DROPS 3
+int mob_drops(MobType type, BgStack out[MAX_MOB_DROPS]);
 
 /* ---- Mesh ------------------------------------------------------------ */
 
