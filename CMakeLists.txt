@@ -95,6 +95,18 @@ else()
     target_compile_options(blockforge PRIVATE -Wall -Wextra)
 endif()
 
+# Headless checks: pure C, no window or GPU needed. Build with
+# -DBUILD_TESTING=ON (the default) and run them with ctest.
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(check_shader_variation
+        ${BFC_ROOT}/tests/check_shader_variation.c
+        ${BFC_ROOT}/src/shaders.c
+    )
+    target_include_directories(check_shader_variation PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME shader_variation COMMAND check_shader_variation)
+endif()
+
 # Copy runtime DLLs next to the executable so the build output is runnable.
 if(WIN32)
     file(GLOB_RECURSE BFC_RUNTIME_DLLS

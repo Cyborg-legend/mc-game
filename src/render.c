@@ -1,5 +1,6 @@
 #include "render.h"
 #include "texture.h"
+#include "shaders.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -7,101 +8,6 @@
 #include <string.h>
 
 /* ------------------------------------------------------------- shaders */
-
-static const char *kWorldVertex =
-    "#version 330 core\n"
-    "layout(location = 0) in vec3 aPos;\n"
-    "layout(location = 1) in vec3 aNormal;\n"
-    "layout(location = 2) in vec2 aUV;\n"
-    "layout(location = 3) in float aAO;\n"
-    "layout(location = 4) in float aLight;\n"
-    "layout(location = 5) in vec2 aTile;\n"
-    "uniform mat4 model;\n"
-    "uniform mat4 view;\n"
-    "uniform mat4 projection;\n"
-    "out vec3 vNormal;\n"
-    "out vec2 vUV;\n"
-    "out float vAO;\n"
-    "out float vLight;\n"
-    "out vec2 vTile;\n"
-    "out vec3 vWorldPos;\n"
-    "void main() {\n"
-    "    vec4 world = model * vec4(aPos, 1.0);\n"
-    "    vWorldPos = world.xyz;\n"
-    "    vNormal = mat3(model) * aNormal;\n"
-    "    vUV = aUV;\n"
-    "    vAO = aAO;\n"
-    "    vLight = aLight;\n"
-    "    vTile = aTile;\n"
-    "    gl_Position = projection * view * world;\n"
-    "}\n";
-
-static const char *kWorldFragment =
-    "#version 330 core\n"
-    "in vec3 vNormal;\n"
-    "in vec2 vUV;\n"
-    "in float vAO;\n"
-    "in float vLight;\n"
-    "in vec2 vTile;\n"
-    "in vec3 vWorldPos;\n"
-    "out vec4 FragColor;\n"
-    "uniform sampler2D texAtlas;\n"
-    "uniform vec3 viewPos;\n"
-    "uniform vec3 ambientColor;\n"
-    "uniform vec3 lightColor;\n"
-    "uniform vec3 fogColor;\n"
-    "uniform float fogStart;\n"
-    "uniform float fogDensity;\n"
-    "void main() {\n"
-    "    // vUV runs 0..span across a quad, so the tile repeats once per block.\n"
-    "    vec2 local = fract(vUV);\n"
-    "    // Per-block variation: a merged quad still gets a rotation and a flip\n"
-    "    // for every block cell it covers, hashed from the cell behind the face.\n"
-    "    // Merging stays worthwhile because the quad is drawn once either way.\n"
-    "    vec3 cellPos = vWorldPos - normalize(vNormal) * 0.5;\n"
-    "    ivec3 cell = ivec3(floor(cellPos));\n"
-    "    uint h = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^\n"
-    "             uint(cell.z) * 83492791u;\n"
-    "    h ^= h >> 13;\n"
-    "    h *= 1274126177u;\n"
-    "    h ^= h >> 16;\n"
-    "    uint spin = (h >> 2) & 3u;\n"
-    "    if (spin == 1u) local = vec2(local.y, 1.0 - local.x);\n"
-    "    else if (spin == 2u) local = vec2(1.0 - local.x, 1.0 - local.y);\n"
-    "    else if (spin == 3u) local = vec2(1.0 - local.y, local.x);\n"
-    "    if ((h & 1u) != 0u) local.x = 1.0 - local.x;\n"
-    "    vec2 atlasUV = (vTile + clamp(local, vec2(0.002), vec2(0.998))) * 0.0625;\n"
-    "    vec3 base = texture(texAtlas, atlasUV).rgb;\n"
-    "    vec3 n = normalize(vNormal);\n"
-    "    float faceShade = 0.70;\n"
-    "    if (n.y > 0.5) faceShade = 1.0;\n"
-    "    else if (n.y < -0.5) faceShade = 0.52;\n"
-    "    else if (abs(n.x) > 0.5) faceShade = 0.82;\n"
-    "    vec3 lit = ambientColor * 0.92 + lightColor * 0.55;\n"
-    "    vec3 color = base * faceShade * lit * mix(0.45, 1.0, vAO) * vLight;\n"
-    "    float distanceToCamera = length(vWorldPos - viewPos);\n"
-    "    float fog = clamp((distanceToCamera - fogStart) * fogDensity, 0.0, 1.0);\n"
-    "    FragColor = vec4(mix(color, fogColor, fog), 1.0);\n"
-    "}\n";
-
-static const char *kUiVertex =
-    "#version 330 core\n"
-    "layout(location = 0) in vec2 aPos;\n"
-    "layout(location = 1) in vec4 aColor;\n"
-    "uniform vec2 screenSize;\n"
-    "out vec4 vColor;\n"
-    "void main() {\n"
-    "    vec2 ndc = vec2(aPos.x / screenSize.x * 2.0 - 1.0,\n"
-    "                    1.0 - aPos.y / screenSize.y * 2.0);\n"
-    "    gl_Position = vec4(ndc, 0.0, 1.0);\n"
-    "    vColor = aColor;\n"
-    "}\n";
-
-static const char *kUiFragment =
-    "#version 330 core\n"
-    "in vec4 vColor;\n"
-    "out vec4 FragColor;\n"
-    "void main() { FragColor = vColor; }\n";
 
 static GLuint compile_shader(GLenum type, const char *source) {
     GLuint shader = glCreateShader(type);
@@ -714,8 +620,8 @@ bool renderer_init(BgRenderer *renderer) {
         return false;
     }
 
-    renderer->program = link_program(kWorldVertex, kWorldFragment);
-    renderer->ui_program = link_program(kUiVertex, kUiFragment);
+    renderer->program = link_program(shader_world_vertex(), shader_world_fragment());
+    renderer->ui_program = link_program(shader_ui_vertex(), shader_ui_fragment());
     if (!renderer->program || !renderer->ui_program) {
         return false;
     }
