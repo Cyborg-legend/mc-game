@@ -36,8 +36,10 @@ Controls**: pick the row, press Enter, then press the new key. Backspace resets
 one row to its default. The table lives in `worlds/settings.cfg`.
 
 Settings also cover mouse sensitivity, field of view, render distance,
-inverted look, fullscreen and a VSync toggle; all of them are saved with the
-bindings.
+inverted look, fullscreen, a VSync toggle and a frame cap; all of them are
+saved with the bindings. The frame cap (60, 120, 144 or 240 FPS, or off) only
+applies while VSync is off, where it stops the game rendering as fast as the
+graphics card allows.
 
 A tool's remaining life shows in its slot's wear bar, in a hover tooltip in the
 inventory and chest, and as a warning above the hotbar once it is down to its
@@ -54,7 +56,9 @@ It stays hidden while no way through is within range.
 
 Requirements: CMake 3.18+, a C11 compiler, GLFW 3.4 and GLEW 2.2. Both
 libraries may be unpacked beside the sources in `glfw_deps/` and `glew_deps/`
-as the CI workflow does, or found through the system package manager.
+as the CI workflow does, or found through the system package manager. On Linux
+the build accepts a distro GLFW through its CMake config, its `pkg-config`
+file, or a plain header and library search, so older packages work too.
 
 Windows (Visual Studio):
 
@@ -66,7 +70,7 @@ cmake --build build --config Release
 Linux:
 
 ```
-sudo apt install cmake gcc libglfw3-dev libglew-dev
+sudo apt install cmake gcc pkg-config libglfw3-dev libglew-dev
 cmake -B build -S .
 cmake --build build
 ./build/blockforge

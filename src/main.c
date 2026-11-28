@@ -5,6 +5,7 @@
 #include "screenshot.h"
 #include "timestep.h"
 #include "interp.h"
+#include "framecap.h"
 
 #include <GLFW/glfw3.h>
 
@@ -126,6 +127,8 @@ typedef struct App {
     bool invert_y;
     bool fullscreen;
     bool vsync;
+    /* Slot in the frame cap table, used only while VSync is off. */
+    int frame_cap;
     bool show_debug;
     float fps;
     float autosave_timer;
@@ -393,6 +396,7 @@ static void settings_defaults(App *app) {
     app->invert_y = false;
     app->fullscreen = false;
     app->vsync = true;
+    app->frame_cap = 3; /* 144 FPS when VSync is off */
     app->show_debug = false;
     app->settings_choice = 0;
 }
@@ -428,6 +432,8 @@ static void settings_load(App *app) {
             app->fullscreen = value != 0.0f;
         } else if (strcmp(key, "vsync") == 0) {
             app->vsync = value != 0.0f;
+        } else if (strcmp(key, "frame_cap") == 0) {
+            app->frame_cap = bg_framecap_clamp((int)(value + 0.5f));
         }
     }
     fclose(file);
@@ -440,9 +446,10 @@ static void settings_save(const App *app) {
     }
     fprintf(file,
             "sensitivity %.6f\nfov %.5f\nrender_dist %d\ninvert_y %d\nfullscreen %d\n"
-            "vsync %d\n",
+            "vsync %d\nframe_cap %d\n",
             (double)app->sensitivity, (double)app->fov, app->render_dist,
-            app->invert_y ? 1 : 0, app->fullscreen ? 1 : 0, app->vsync ? 1 : 0);
+            app->invert_y ? 1 : 0, app->fullscreen ? 1 : 0, app->vsync ? 1 : 0,
+            app->frame_cap);
     bindings_write(&app->bindings, file);
     fclose(file);
 }
@@ -645,13 +652,13 @@ static UiRect chest_player_slot_rect(const App *app, int index) {
     return r;
 }
 
-#define SETTINGS_VALUE_ROWS 6
+#define SETTINGS_VALUE_ROWS 7
 
 static int settings_row_count(void) {
     return SETTINGS_VALUE_ROWS + BG_ACTION_COUNT;
 }
 
-/* Five sliders and one row per rebindable action share the screen, so the
+/* The value rows and one row per rebindable action share the screen, so the
  * pitch shrinks on short windows instead of running off the bottom edge. */
 static float settings_row_pitch(const App *app) {
     const float available = (float)app->height * 0.66f;
@@ -2172,9 +2179,10 @@ static void render_settings(App *app) {
     snprintf(values[3], sizeof(values[3]), "%s", app->invert_y ? "ON" : "OFF");
     snprintf(values[4], sizeof(values[4]), "%s", app->fullscreen ? "ON" : "OFF");
     snprintf(values[5], sizeof(values[5]), "%s", app->vsync ? "ON" : "OFF");
+    snprintf(values[6], sizeof(values[6]), "%s", bg_framecap_label(app->frame_cap));
     const char *labels[SETTINGS_VALUE_ROWS] = {
         "MOUSE SENSITIVITY", "FIELD OF VIEW", "RENDER DISTANCE", "INVERT LOOK", "FULLSCREEN",
-        "VSYNC"
+        "VSYNC", "FRAME CAP (WITHOUT VSYNC)"
     };
 
     const int rows = settings_row_count();
@@ -3381,6 +3389,8 @@ static void handle_settings_input(App *app, GLFWwindow *window) {
     } else if (choice == 5 && (change != 0 || toggle)) {
         app->vsync = !app->vsync;
         glfwSwapInterval(app->vsync ? 1 : 0);
+    } else if (choice == 6 && (change != 0 || toggle)) {
+        app->frame_cap = bg_framecap_next(app->frame_cap);
     }
     settings_save(app);
 }
@@ -4237,6 +4247,7 @@ int main(void) {
         glfwPollEvents();
 
         const double now = glfwGetTime();
+        const double frame_start = now;
         float dt = (float)(now - previous);
         previous = now;
         if (dt > 0.1f) {
@@ -4317,6 +4328,18 @@ int main(void) {
         }
 
         glfwSwapBuffers(window);
+
+        /* VSync already paces the swap. Without it, wait out whatever is left
+         * of the frame budget so an uncapped GPU is not asked for thousands of
+         * frames a second. Events are still delivered while waiting. */
+        if (!g_app.vsync) {
+            const double spent = glfwGetTime() - frame_start;
+            const double delay = bg_framecap_delay(spent, bg_framecap_hz(g_app.frame_cap));
+            if (delay > 0.0) {
+                glfwWaitEventsTimeout(delay);
+            }
+        }
+
         memcpy(g_app.prev_keys, g_app.input.keys, sizeof(g_app.prev_keys));
         g_app.input.mouse[0] = false;
         g_app.input.mouse[1] = false;

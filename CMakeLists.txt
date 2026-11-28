@@ -160,6 +160,14 @@ if(BUILD_TESTING)
     add_executable(check_effects ${BFC_ROOT}/tests/check_effects.c)
     target_include_directories(check_effects PRIVATE ${BFC_ROOT}/src)
     add_test(NAME effects COMMAND check_effects)
+
+    add_executable(check_framecap
+        ${BFC_ROOT}/tests/check_framecap.c
+        ${BFC_ROOT}/src/framecap.c
+    )
+    target_include_directories(check_framecap PRIVATE ${BFC_ROOT}/src)
+    target_link_libraries(check_framecap PRIVATE m)
+    add_test(NAME framecap COMMAND check_framecap)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.
