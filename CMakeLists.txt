@@ -11,6 +11,19 @@ endif()
 
 set(BFC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# Experimental: build chunk terrain on one POSIX worker thread and hand the
+# block arrays back to the main thread for lighting, decoration and meshing.
+# Off by default; the synchronous path stays the supported one.
+option(BLOCKFORGE_ASYNC_CHUNKS "Generate chunk terrain on a worker thread (POSIX only)" OFF)
+if(BLOCKFORGE_ASYNC_CHUNKS)
+    find_package(Threads REQUIRED)
+endif()
+
+# The worker header is GL-free, so its queue check always builds. The worker
+# itself only links when the switch is on.
+add_library(blockforge_chunkqueue STATIC ${BFC_ROOT}/src/chunkqueue.c)
+target_include_directories(blockforge_chunkqueue PUBLIC ${BFC_ROOT}/src)
+
 # Dependencies may be unpacked next to the sources (CI) or one level up.
 if(EXISTS "${BFC_ROOT}/glfw_deps" OR EXISTS "${BFC_ROOT}/glew_deps")
     set(DEPS_ROOT "${BFC_ROOT}")
@@ -24,6 +37,10 @@ add_executable(blockforge ${BFC_SOURCES})
 
 # GLFW must not pull in a system GL header; GLEW provides the GL entry points.
 target_compile_definitions(blockforge PRIVATE GLFW_INCLUDE_NONE GLEW_NO_GLU)
+if(BLOCKFORGE_ASYNC_CHUNKS)
+    target_compile_definitions(blockforge PRIVATE BG_ASYNC_CHUNKS)
+    target_link_libraries(blockforge PRIVATE Threads::Threads blockforge_chunkqueue)
+endif()
 target_include_directories(blockforge PRIVATE
     ${BFC_ROOT}/src
     ${DEPS_ROOT}/glfw_deps/include
@@ -189,6 +206,22 @@ if(BUILD_TESTING)
     )
     target_include_directories(check_loot PRIVATE ${BFC_ROOT}/src)
     add_test(NAME loot COMMAND check_loot)
+
+    add_executable(check_chunkqueue ${BFC_ROOT}/tests/check_chunkqueue.c)
+    target_link_libraries(check_chunkqueue PRIVATE blockforge_chunkqueue)
+    add_test(NAME chunkqueue COMMAND check_chunkqueue)
+
+    # Real threads, so only registered when the experimental path is built.
+    if(BLOCKFORGE_ASYNC_CHUNKS)
+        add_executable(check_chunkworker
+            ${BFC_ROOT}/tests/check_chunkworker.c
+            ${BFC_ROOT}/src/chunkworker.c
+        )
+        target_include_directories(check_chunkworker PRIVATE ${BFC_ROOT}/src)
+        target_compile_definitions(check_chunkworker PRIVATE BG_ASYNC_CHUNKS)
+        target_link_libraries(check_chunkworker PRIVATE Threads::Threads blockforge_chunkqueue)
+        add_test(NAME chunkworker COMMAND check_chunkworker)
+    endif()
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

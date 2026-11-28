@@ -8,6 +8,7 @@
 #include "framecap.h"
 #include "worldmeta.h"
 #include "gltrace.h"
+#include "chunkworker.h"
 
 #include <GLFW/glfw3.h>
 
@@ -146,6 +147,14 @@ typedef struct App {
     int drop_count;
     BgStack cursor;
     int open_chest;
+
+    /* Experimental: terrain generation on a worker thread, compiled in only
+     * with BLOCKFORGE_ASYNC_CHUNKS. Null keeps the synchronous path. */
+    BgChunkWorker *chunk_worker;
+    /* Seed and realm snapshot the worker reads; refreshed on the main thread
+     * at the start of each streaming pass. */
+    uint64_t chunk_seed;
+    Dimension chunk_dimension;
 
     /* The rift compass: nearest way through, refreshed a few times a second. */
     BgLandmark landmark;
@@ -1443,10 +1452,64 @@ static void set_cursor_captured(GLFWwindow *window, bool captured) {
     g_app.input.mouse_dy = 0;
 }
 
+#ifdef BG_ASYNC_CHUNKS
+/* Runs on the worker thread: it reads the seed and realm only and writes into
+ * the block array it is handed. Nothing here may touch the World, GL or the
+ * player. */
+static void generate_chunk_offthread(void *user, const BgChunkJob *job, BlockId *out) {
+    const App *app = (const App *)user;
+    world_generate_chunk_blocks(app->chunk_seed, app->chunk_dimension, job->cx, job->cy,
+                                job->cz, out);
+}
+#endif
+
 static void ensure_column(App *app, int cx, int cz) {
+#ifdef BG_ASYNC_CHUNKS
+    if (app->chunk_worker) {
+        const int rows = dimension_top(app->world.dimension) / CHUNK_SIZE;
+        for (int cy = 0; cy < rows; ++cy) {
+            if (world_chunk(&app->world, cx, cy, cz, false)) {
+                continue;
+            }
+            BgChunkJob job;
+            job.cx = cx;
+            job.cy = cy;
+            job.cz = cz;
+            /* Duplicates already waiting are refused by the queue. */
+            chunkworker_submit(app->chunk_worker, job);
+        }
+        return;
+    }
+#endif
     if (!world_chunk(&app->world, cx, 0, cz, false)) {
         world_generate_around(&app->world, cx, cz, 0);
     }
+}
+
+/* Installs whatever the worker has finished. Lighting and tree decoration stay
+ * here, on the main thread, because both read their neighbours. */
+static void pump_generated_chunks(App *app) {
+#ifdef BG_ASYNC_CHUNKS
+    if (!app->chunk_worker) {
+        return;
+    }
+    BgChunkResult result;
+    int adopted = 0;
+    while (adopted < 48 && chunkworker_take(app->chunk_worker, &result)) {
+        if (!world_adopt_chunk(&app->world, result.cx, result.cy, result.cz, result.blocks)) {
+            continue;
+        }
+        ++adopted;
+        if (result.cy == 0) {
+            const int x0 = result.cx * CHUNK_SIZE;
+            const int z0 = result.cz * CHUNK_SIZE;
+            world_decorate_region(&app->world, x0, z0, x0 + CHUNK_SIZE - 1,
+                                  z0 + CHUNK_SIZE - 1);
+        }
+    }
+#else
+    (void)app;
+#endif
 }
 
 static void mesh_column(App *app, int cx, int cz) {
@@ -1466,11 +1529,22 @@ static void mesh_column(App *app, int cx, int cz) {
 static void stream_around_player(App *app) {
     const int cx = (int)floorf(app->player.x) >> 4;
     const int cz = (int)floorf(app->player.z) >> 4;
-    if (app->tracked_count > 0 && cx == app->last_cx && cz == app->last_cz) {
+    bool late_results = false;
+#ifdef BG_ASYNC_CHUNKS
+    /* A finished chunk still has to be installed and meshed even when the
+     * player has not crossed a chunk border. */
+    late_results = app->chunk_worker && chunkworker_ready(app->chunk_worker) > 0;
+#endif
+    if (app->tracked_count > 0 && cx == app->last_cx && cz == app->last_cz &&
+        !late_results) {
         return;
     }
     app->last_cx = cx;
     app->last_cz = cz;
+#ifdef BG_ASYNC_CHUNKS
+    app->chunk_seed = app->world.seed;
+    app->chunk_dimension = app->world.dimension;
+#endif
 
     const int radius = app->render_dist;
     const size_t span = (size_t)(radius * 2 + 3);
@@ -1486,12 +1560,21 @@ static void stream_around_player(App *app) {
         }
     }
 
+    pump_generated_chunks(app);
+
     for (int dz = -radius; dz <= radius; ++dz) {
         for (int dx = -radius; dx <= radius; ++dx) {
             const uint64_t key = column_key(cx + dx, cz + dz);
             if (column_tracked(app, key)) {
                 continue;
             }
+#ifdef BG_ASYNC_CHUNKS
+            /* Leave the column untracked until its terrain has arrived, so the
+             * next frame meshes it instead of showing an empty hole. */
+            if (app->chunk_worker && !world_chunk(&app->world, cx + dx, 0, cz + dz, false)) {
+                continue;
+            }
+#endif
             track_column(app, key);
             mesh_column(app, cx + dx, cz + dz);
         }
@@ -4296,6 +4379,12 @@ int main(void) {
 
     ensure_world_dir();
     settings_load(&g_app);
+#ifdef BG_ASYNC_CHUNKS
+    g_app.chunk_worker = chunkworker_create(generate_chunk_offthread, &g_app);
+    if (!g_app.chunk_worker) {
+        fprintf(stderr, "Chunk worker unavailable; generating on the main thread\n");
+    }
+#endif
     glfwSwapInterval(g_app.vsync ? 1 : 0);
     settings_apply_fullscreen(&g_app, window);
     audio_init();
@@ -4420,6 +4509,8 @@ int main(void) {
         save_active_world(&g_app);
     }
     audio_shutdown();
+    chunkworker_destroy(g_app.chunk_worker);
+    g_app.chunk_worker = NULL;
     renderer_shutdown(&g_app.renderer);
     world_free(&g_app.world);
     glfwDestroyWindow(window);

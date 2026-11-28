@@ -135,6 +135,20 @@ Chunk *world_chunk(World *world, int cx, int cy, int cz, bool create);
 BlockId world_get_block(const World *world, int x, int y, int z);
 void world_set_block(World *world, int x, int y, int z, BlockId block);
 void world_generate_around(World *world, int center_cx, int center_cz, int radius);
+
+/* Fills out[CHUNK_VOLUME] with one chunk's terrain from the seed alone. It
+ * touches no World, GL or game state, so it is safe to call from the optional
+ * chunk worker. */
+void world_generate_chunk_blocks(uint64_t seed, Dimension dimension, int cx, int cy, int cz,
+                                 BlockId *out);
+
+/* Installs an array produced by world_generate_chunk_blocks, recreating the
+ * chunk if needed, refreshing its landmark cache and relighting its column. */
+bool world_adopt_chunk(World *world, int cx, int cy, int cz, const BlockId *blocks);
+
+/* Upperworld-only decoration for a region, exposed so the async path can grow
+ * trees once a generated column arrives. */
+void world_decorate_region(World *world, int x0, int z0, int x1, int z1);
 int world_surface_y(const World *world, int x, int z);
 size_t world_chunk_count(const World *world);
 

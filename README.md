@@ -89,6 +89,20 @@ The headless checks in `tests/` need no window or GPU. They build alongside the
 game (`-DBUILD_TESTING=ON` is the default) and run with
 `ctest --test-dir build --output-on-failure`.
 
+### Experimental: chunk generation on a worker thread
+
+```
+cmake -B build -S . -DBLOCKFORGE_ASYNC_CHUNKS=ON
+cmake --build build
+```
+
+With that switch on, one POSIX worker thread builds chunk terrain from the seed
+and hands block arrays back to the main thread, which still does the lighting,
+tree decoration and meshing. The queue is bounded and refuses duplicate chunks,
+and a client that falls behind drops finished chunks rather than blocking the
+worker. It is off by default, is not available on Windows, and keeps the
+synchronous path as the supported one.
+
 On Windows, GLFW and GLEW are linked statically, so `blockforge.exe` runs on
 its own with no DLLs beside it. Every push to `main` builds the exe and a
 `blockforge-windows.zip` in the GitHub Actions workflow.

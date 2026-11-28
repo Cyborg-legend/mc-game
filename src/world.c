@@ -966,6 +966,58 @@ void world_generate_around(World *world, int center_cx, int center_cz, int radiu
     }
 }
 
+/* Pure per-chunk terrain. The generator functions read only the seed, so a
+ * probe World is enough and the worker never touches live game state. */
+void world_generate_chunk_blocks(uint64_t seed, Dimension dimension, int cx, int cy, int cz,
+                                 BlockId *out) {
+    if (!out) {
+        return;
+    }
+    World probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.seed = seed;
+    probe.dimension = dimension;
+
+    Chunk scratch;
+    memset(&scratch, 0, sizeof(scratch));
+    scratch.cx = cx;
+    scratch.cy = cy;
+    scratch.cz = cz;
+
+    if (dimension == BG_CINDERHOLD) {
+        generate_cinderhold_chunk(&probe, &scratch);
+    } else if (dimension == BG_UNDERWORLD) {
+        generate_underworld_chunk(&probe, &scratch);
+    } else {
+        generate_upperworld_chunk(&probe, &scratch);
+    }
+    memcpy(out, scratch.blocks, sizeof(scratch.blocks));
+}
+
+bool world_adopt_chunk(World *world, int cx, int cy, int cz, const BlockId *blocks) {
+    if (!world || !blocks) {
+        return false;
+    }
+    Chunk *chunk = world_chunk(world, cx, cy, cz, true);
+    if (!chunk) {
+        return false;
+    }
+    memcpy(chunk->blocks, blocks, sizeof(chunk->blocks));
+    chunk->landmark = chunk_holds_landmark(chunk);
+    if (!world->defer_light) {
+        world_relight(world, cx * CHUNK_SIZE, cz * CHUNK_SIZE,
+                      cx * CHUNK_SIZE + CHUNK_SIZE - 1, cz * CHUNK_SIZE + CHUNK_SIZE - 1);
+    }
+    return true;
+}
+
+void world_decorate_region(World *world, int x0, int z0, int x1, int z1) {
+    if (!world || world->dimension != BG_UPPERWORLD) {
+        return;
+    }
+    decorate_upperworld(world, x0, z0, x1, z1);
+}
+
 int world_surface_y(const World *world, int x, int z) {
     const int start = (world->dimension == BG_UPPERWORLD)
                           ? (UPPERWORLD_TOP - 2)
