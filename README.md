@@ -35,6 +35,10 @@ Walk, sprint, jump, inventory, drop and eat can be rebound in **Settings →
 Controls**: pick the row, press Enter, then press the new key. Backspace resets
 one row to its default. The table lives in `worlds/settings.cfg`.
 
+Settings also cover mouse sensitivity, field of view, render distance,
+inverted look, fullscreen and a VSync toggle; all of them are saved with the
+bindings.
+
 A tool's remaining life shows in its slot's wear bar, in a hover tooltip in the
 inventory and chest, and as a warning above the hotbar once it is down to its
 last quarter.

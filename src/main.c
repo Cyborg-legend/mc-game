@@ -125,6 +125,7 @@ typedef struct App {
     int render_dist;
     bool invert_y;
     bool fullscreen;
+    bool vsync;
     bool show_debug;
     float fps;
     float autosave_timer;
@@ -391,6 +392,7 @@ static void settings_defaults(App *app) {
     app->render_dist = DEFAULT_RENDER_RADIUS;
     app->invert_y = false;
     app->fullscreen = false;
+    app->vsync = true;
     app->show_debug = false;
     app->settings_choice = 0;
 }
@@ -424,6 +426,8 @@ static void settings_load(App *app) {
             app->invert_y = value != 0.0f;
         } else if (strcmp(key, "fullscreen") == 0) {
             app->fullscreen = value != 0.0f;
+        } else if (strcmp(key, "vsync") == 0) {
+            app->vsync = value != 0.0f;
         }
     }
     fclose(file);
@@ -434,9 +438,11 @@ static void settings_save(const App *app) {
     if (!file) {
         return;
     }
-    fprintf(file, "sensitivity %.6f\nfov %.5f\nrender_dist %d\ninvert_y %d\nfullscreen %d\n",
+    fprintf(file,
+            "sensitivity %.6f\nfov %.5f\nrender_dist %d\ninvert_y %d\nfullscreen %d\n"
+            "vsync %d\n",
             (double)app->sensitivity, (double)app->fov, app->render_dist,
-            app->invert_y ? 1 : 0, app->fullscreen ? 1 : 0);
+            app->invert_y ? 1 : 0, app->fullscreen ? 1 : 0, app->vsync ? 1 : 0);
     bindings_write(&app->bindings, file);
     fclose(file);
 }
@@ -639,7 +645,7 @@ static UiRect chest_player_slot_rect(const App *app, int index) {
     return r;
 }
 
-#define SETTINGS_VALUE_ROWS 5
+#define SETTINGS_VALUE_ROWS 6
 
 static int settings_row_count(void) {
     return SETTINGS_VALUE_ROWS + BG_ACTION_COUNT;
@@ -2165,8 +2171,10 @@ static void render_settings(App *app) {
     snprintf(values[2], sizeof(values[2]), "%d CHUNKS", app->render_dist);
     snprintf(values[3], sizeof(values[3]), "%s", app->invert_y ? "ON" : "OFF");
     snprintf(values[4], sizeof(values[4]), "%s", app->fullscreen ? "ON" : "OFF");
+    snprintf(values[5], sizeof(values[5]), "%s", app->vsync ? "ON" : "OFF");
     const char *labels[SETTINGS_VALUE_ROWS] = {
-        "MOUSE SENSITIVITY", "FIELD OF VIEW", "RENDER DISTANCE", "INVERT LOOK", "FULLSCREEN"
+        "MOUSE SENSITIVITY", "FIELD OF VIEW", "RENDER DISTANCE", "INVERT LOOK", "FULLSCREEN",
+        "VSYNC"
     };
 
     const int rows = settings_row_count();
@@ -3370,6 +3378,9 @@ static void handle_settings_input(App *app, GLFWwindow *window) {
     } else if (choice == 4 && (change != 0 || toggle)) {
         app->fullscreen = !app->fullscreen;
         settings_apply_fullscreen(app, window);
+    } else if (choice == 5 && (change != 0 || toggle)) {
+        app->vsync = !app->vsync;
+        glfwSwapInterval(app->vsync ? 1 : 0);
     }
     settings_save(app);
 }
@@ -4205,6 +4216,7 @@ int main(void) {
 
     ensure_world_dir();
     settings_load(&g_app);
+    glfwSwapInterval(g_app.vsync ? 1 : 0);
     settings_apply_fullscreen(&g_app, window);
     audio_init();
     worlds_read_index(&g_app);
