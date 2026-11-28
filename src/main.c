@@ -37,6 +37,18 @@
 #define DEATH_SECONDS 2.6f
 #define SETTINGS_PATH "worlds/settings.cfg"
 
+/* bindings.c stays GLFW-free so it can be tested without a window; these
+ * asserts keep the numeric codes it stores equal to GLFW's real ones. */
+_Static_assert(GLFW_KEY_SPACE == BG_KEY_SPACE, "GLFW key code drift");
+_Static_assert(GLFW_KEY_A == BG_KEY_A, "GLFW key code drift");
+_Static_assert(GLFW_KEY_D == BG_KEY_D, "GLFW key code drift");
+_Static_assert(GLFW_KEY_E == BG_KEY_E, "GLFW key code drift");
+_Static_assert(GLFW_KEY_F == BG_KEY_F, "GLFW key code drift");
+_Static_assert(GLFW_KEY_Q == BG_KEY_Q, "GLFW key code drift");
+_Static_assert(GLFW_KEY_S == BG_KEY_S, "GLFW key code drift");
+_Static_assert(GLFW_KEY_W == BG_KEY_W, "GLFW key code drift");
+_Static_assert(GLFW_KEY_LEFT_SHIFT == BG_KEY_LEFT_SHIFT, "GLFW key code drift");
+
 typedef enum {
     STATE_TITLE,
     STATE_WORLDS,
@@ -96,6 +108,10 @@ typedef struct App {
     float time;
 
     /* Settings, persisted beside the worlds. */
+    BgBindings bindings;
+    /* Action waiting for a key press on the settings screen, -1 when idle. */
+    int rebind_action;
+    bool screenshot_pending;
     float sensitivity;
     float fov;
     int render_dist;
@@ -132,6 +148,8 @@ static void quest_objective(const App *app, char *out, size_t size);
 static void save_active_world(App *app);
 static void set_cursor_captured(GLFWwindow *window, bool captured);
 static void ensure_world_dir(void);
+static void set_toast(App *app, const char *text);
+static void settings_save(const App *app);
 
 /* ------------------------------------------------------------- callbacks */
 
@@ -142,6 +160,31 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action, int mo
     if (key < 0 || key >= INPUT_KEY_COUNT) {
         return;
     }
+
+    /* The settings screen listens for one key here rather than in the frame
+     * loop, so any key at all can be bound. */
+    if (g_app.state == STATE_SETTINGS && g_app.rebind_action >= 0 &&
+        action == GLFW_PRESS) {
+        if (key == GLFW_KEY_ESCAPE) {
+            g_app.rebind_action = -1;
+            set_toast(&g_app, "Rebinding cancelled.");
+            return;
+        }
+        if (bindings_assign(&g_app.bindings, g_app.rebind_action, key)) {
+            char key_name[24];
+            char message[96];
+            bindings_key_name(key, key_name, sizeof(key_name));
+            snprintf(message, sizeof(message), "%s is now %s.",
+                     bindings_action_name(g_app.rebind_action), key_name);
+            set_toast(&g_app, message);
+            settings_save(&g_app);
+        } else {
+            set_toast(&g_app, "That key already does something else.");
+        }
+        g_app.rebind_action = -1;
+        return;
+    }
+
     if (action == GLFW_PRESS) {
         g_app.input.keys[key] = true;
     } else if (action == GLFW_RELEASE) {
@@ -284,6 +327,11 @@ static bool key_pressed(const App *app, int key) {
     return app->input.keys[key] && !app->prev_keys[key];
 }
 
+/* A press of whatever key the player bound to this action. */
+static bool action_pressed(const App *app, BgAction action) {
+    return key_pressed(app, bindings_key(&app->bindings, action));
+}
+
 static uint64_t column_key(int cx, int cz) {
     return ((uint64_t)(uint32_t)cx << 32) | (uint64_t)(uint32_t)cz;
 }
@@ -315,6 +363,8 @@ static void set_toast(App *app, const char *text) {
 /* -------------------------------------------------------------- settings */
 
 static void settings_defaults(App *app) {
+    bindings_default(&app->bindings);
+    app->rebind_action = -1;
     app->sensitivity = DEFAULT_SENSITIVITY;
     app->fov = DEFAULT_FOV;
     app->render_dist = DEFAULT_RENDER_RADIUS;
@@ -330,9 +380,19 @@ static void settings_load(App *app) {
     if (!file) {
         return;
     }
-    char key[32];
-    float value = 0.0f;
-    while (fscanf(file, "%31s %f", key, &value) == 2) {
+    char line[160];
+    while (fgets(line, sizeof(line), file)) {
+        char key[32];
+        char token[32];
+        float value = 0.0f;
+        if (sscanf(line, "%31s %31s %f", key, token, &value) == 3 &&
+            strcmp(key, "bind") == 0) {
+            bindings_apply_setting(&app->bindings, token, (int)value);
+            continue;
+        }
+        if (sscanf(line, "%31s %f", key, &value) != 2) {
+            continue;
+        }
         if (strcmp(key, "sensitivity") == 0 && value > 0.0003f && value < 0.02f) {
             app->sensitivity = value;
         } else if (strcmp(key, "fov") == 0 && value > 0.6f && value < 1.9f) {
@@ -356,6 +416,7 @@ static void settings_save(const App *app) {
     fprintf(file, "sensitivity %.6f\nfov %.5f\nrender_dist %d\ninvert_y %d\nfullscreen %d\n",
             (double)app->sensitivity, (double)app->fov, app->render_dist,
             app->invert_y ? 1 : 0, app->fullscreen ? 1 : 0);
+    bindings_write(&app->bindings, file);
     fclose(file);
 }
 
@@ -547,12 +608,33 @@ static UiRect chest_player_slot_rect(const App *app, int index) {
     return r;
 }
 
+#define SETTINGS_VALUE_ROWS 5
+
+static int settings_row_count(void) {
+    return SETTINGS_VALUE_ROWS + BG_ACTION_COUNT;
+}
+
+/* Five sliders and one row per rebindable action share the screen, so the
+ * pitch shrinks on short windows instead of running off the bottom edge. */
+static float settings_row_pitch(const App *app) {
+    const float available = (float)app->height * 0.66f;
+    float pitch = available / (float)settings_row_count();
+    if (pitch > 40.0f) {
+        pitch = 40.0f;
+    }
+    if (pitch < 26.0f) {
+        pitch = 26.0f;
+    }
+    return pitch;
+}
+
 static UiRect settings_row_rect(const App *app, int index) {
+    const float pitch = settings_row_pitch(app);
     UiRect r;
     r.x = (float)app->width * 0.5f - 300.0f;
-    r.y = (float)app->height * 0.30f + (float)index * 54.0f;
+    r.y = (float)app->height * 0.14f + (float)index * pitch;
     r.w = 600.0f;
-    r.h = 44.0f;
+    r.h = pitch - 6.0f;
     return r;
 }
 
@@ -560,7 +642,8 @@ static UiRect settings_step_rect(const App *app, int index, bool plus) {
     const UiRect row = settings_row_rect(app, index);
     UiRect r;
     r.w = 38.0f;
-    r.h = 30.0f;
+    r.h = row.h - 10.0f;
+    if (r.h > 30.0f) r.h = 30.0f;
     r.x = plus ? row.x + row.w - r.w - 10.0f : row.x + row.w - r.w * 2.0f - 28.0f;
     r.y = row.y + (row.h - r.h) * 0.5f;
     return r;
@@ -2040,16 +2123,20 @@ static void render_settings(App *app) {
     const float muted[4] = { 0.62f, 0.66f, 0.74f, 1.0f };
     draw_shadowed_centered(&ui, width * 0.5f, height * 0.13f, 4.0f, "SETTINGS", title);
 
-    char values[5][32];
+    char values[SETTINGS_VALUE_ROWS][32];
     snprintf(values[0], sizeof(values[0]), "%.4f", (double)app->sensitivity);
     snprintf(values[1], sizeof(values[1]), "%d DEGREES", (int)(app->fov * 57.2958f + 0.5f));
     snprintf(values[2], sizeof(values[2]), "%d CHUNKS", app->render_dist);
     snprintf(values[3], sizeof(values[3]), "%s", app->invert_y ? "ON" : "OFF");
     snprintf(values[4], sizeof(values[4]), "%s", app->fullscreen ? "ON" : "OFF");
-    const char *labels[5] = { "MOUSE SENSITIVITY", "FIELD OF VIEW", "RENDER DISTANCE",
-                              "INVERT LOOK", "FULLSCREEN" };
+    const char *labels[SETTINGS_VALUE_ROWS] = {
+        "MOUSE SENSITIVITY", "FIELD OF VIEW", "RENDER DISTANCE", "INVERT LOOK", "FULLSCREEN"
+    };
 
-    for (int i = 0; i < 5; ++i) {
+    const int rows = settings_row_count();
+    const float pitch = settings_row_pitch(app);
+    const float scale = pitch < 32.0f ? 1.7f : 2.0f;
+    for (int i = 0; i < rows; ++i) {
         const UiRect r = settings_row_rect(app, i);
         const bool selected = (i == app->settings_choice);
         const float border[4] = { 0.05f, 0.05f, 0.06f, 0.95f };
@@ -2057,22 +2144,38 @@ static void render_settings(App *app) {
         const float fill[4] = { selected ? 0.40f : 0.26f, selected ? 0.41f : 0.27f,
                                 selected ? 0.45f : 0.29f, 1.0f };
         ui_rect(&ui, r.x, r.y, r.w, r.h, fill);
-        ui_text(&ui, r.x + 18.0f, r.y + 12.0f, 2.0f, labels[i],
-                selected ? title : text_color);
-        /* The value sits in the gap left of the -/+ steppers. */
-        ui_text(&ui, r.x + r.w - 118.0f - ui_text_width(values[i], 1.8f), r.y + 13.0f, 1.8f,
-                values[i], selected ? text_color : muted);
+        const float text_y = r.y + (r.h - 12.0f) * 0.5f;
 
-        const UiRect minus = settings_step_rect(app, i, false);
-        const UiRect plus = settings_step_rect(app, i, true);
-        draw_button(&ui, minus.x, minus.y, minus.w, minus.h, 1.8f, "-", false, true);
-        draw_button(&ui, plus.x, plus.y, plus.w, plus.h, 1.8f, "+", false, true);
+        if (i < SETTINGS_VALUE_ROWS) {
+            ui_text(&ui, r.x + 18.0f, text_y, scale, labels[i],
+                    selected ? title : text_color);
+            /* The value sits in the gap left of the -/+ steppers. */
+            ui_text(&ui, r.x + r.w - 118.0f - ui_text_width(values[i], 1.8f), text_y, 1.8f,
+                    values[i], selected ? text_color : muted);
+
+            const UiRect minus = settings_step_rect(app, i, false);
+            const UiRect plus = settings_step_rect(app, i, true);
+            draw_button(&ui, minus.x, minus.y, minus.w, minus.h, 1.8f, "-", false, true);
+            draw_button(&ui, plus.x, plus.y, plus.w, plus.h, 1.8f, "+", false, true);
+        } else {
+            const int action = i - SETTINGS_VALUE_ROWS;
+            const bool waiting = app->rebind_action == action;
+            char key_name[24];
+            bindings_key_name(bindings_key(&app->bindings, action), key_name, sizeof(key_name));
+            ui_text(&ui, r.x + 18.0f, text_y, scale, bindings_action_name(action),
+                    selected ? title : text_color);
+            const char *shown = waiting ? "PRESS A KEY..." : key_name;
+            ui_text(&ui, r.x + r.w - 24.0f - ui_text_width(shown, 1.8f), text_y, 1.8f,
+                    shown, waiting ? title : (selected ? text_color : muted));
+        }
     }
 
-    ui_text_centered(&ui, width * 0.5f, height - 70.0f, 1.6f,
-                     "UP/DOWN SELECTS   LEFT/RIGHT CHANGES   ESC SAVES AND GOES BACK", muted);
+    ui_text_centered(&ui, width * 0.5f, height - 64.0f, 1.6f,
+                     "UP/DOWN SELECTS   LEFT/RIGHT CHANGES   ENTER REBINDS A KEY", muted);
+    ui_text_centered(&ui, width * 0.5f, height - 42.0f, 1.6f,
+                     "BACKSPACE RESETS ONE   ESC SAVES AND GOES BACK", muted);
     if (app->toast_timer > 0.0f) {
-        ui_text_centered(&ui, width * 0.5f, height - 100.0f, 1.6f, app->toast, title);
+        ui_text_centered(&ui, width * 0.5f, height - 92.0f, 1.6f, app->toast, title);
     }
 
     renderer_draw_ui(&app->renderer, &ui);
@@ -2522,7 +2625,8 @@ static void render_inventory(App *app) {
                      "CLICK A RECIPE TO CRAFT   CLICK AN ITEM TO CARRY IT, CLICK AGAIN TO DROP IT",
                      text_color);
     ui_text_centered(&ui, width * 0.5f, panel.y + panel.h - 18.0f, 1.5f,
-                     "RIGHT CLICK SPLITS   Q THROWS   R REPAIRS A HELD TOOL   E CLOSES", muted);
+                     "RIGHT CLICK SPLITS   DROP THROWS   R REPAIRS A HELD TOOL   INVENTORY CLOSES",
+                     muted);
 
     if (app->cursor.count > 0) {
         ui_draw_item_icon(&ui, app->mouse_x - 18.0f, app->mouse_y - 18.0f, 36.0f,
@@ -2700,8 +2804,7 @@ static void repair_selected(App *app) {
 }
 
 static void handle_inventory_input(App *app, GLFWwindow *window) {
-    if (key_pressed(app, GLFW_KEY_E) || key_pressed(app, GLFW_KEY_C) ||
-        key_pressed(app, GLFW_KEY_ESCAPE)) {
+    if (action_pressed(app, BG_ACTION_INVENTORY) || key_pressed(app, GLFW_KEY_ESCAPE)) {
         stash_cursor(app);
         app->show_inventory = false;
         set_cursor_captured(window, true);
@@ -2714,7 +2817,7 @@ static void handle_inventory_input(App *app, GLFWwindow *window) {
         }
     }
 
-    if (key_pressed(app, GLFW_KEY_Q)) {
+    if (action_pressed(app, BG_ACTION_DROP)) {
         if (app->cursor.count > 0) {
             world_drop_item(app->drops, &app->drop_count, &app->player, app->cursor.item,
                             app->cursor.count);
@@ -2920,8 +3023,7 @@ static void chest_store(App *app, BgContainer *container, BgStack *slot) {
 }
 
 static void handle_chest_input(App *app, GLFWwindow *window) {
-    if (key_pressed(app, GLFW_KEY_E) || key_pressed(app, GLFW_KEY_C) ||
-        key_pressed(app, GLFW_KEY_ESCAPE)) {
+    if (action_pressed(app, BG_ACTION_INVENTORY) || key_pressed(app, GLFW_KEY_ESCAPE)) {
         stash_cursor(app);
         app->open_chest = -1;
         set_cursor_captured(window, true);
@@ -3123,6 +3225,11 @@ static void handle_title_input(App *app, GLFWwindow *window) {
 }
 
 static void handle_settings_input(App *app, GLFWwindow *window) {
+    /* While a binding waits for its key, on_key owns the keyboard. */
+    if (app->rebind_action >= 0) {
+        return;
+    }
+
     if (key_pressed(app, GLFW_KEY_ESCAPE)) {
         settings_save(app);
         app->state = app->settings_return;
@@ -3132,11 +3239,15 @@ static void handle_settings_input(App *app, GLFWwindow *window) {
         return;
     }
 
+    const int rows = settings_row_count();
+    if (app->settings_choice < 0 || app->settings_choice >= rows) {
+        app->settings_choice = 0;
+    }
     if (key_pressed(app, GLFW_KEY_UP) || key_pressed(app, GLFW_KEY_W)) {
-        app->settings_choice = (app->settings_choice + 4) % 5;
+        app->settings_choice = (app->settings_choice + rows - 1) % rows;
     }
     if (key_pressed(app, GLFW_KEY_DOWN) || key_pressed(app, GLFW_KEY_S)) {
-        app->settings_choice = (app->settings_choice + 1) % 5;
+        app->settings_choice = (app->settings_choice + 1) % rows;
     }
 
     int change = 0;
@@ -3150,9 +3261,15 @@ static void handle_settings_input(App *app, GLFWwindow *window) {
                   key_pressed(app, GLFW_KEY_SPACE);
 
     if (app->input.mouse[0]) {
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < rows; ++i) {
             if (ui_hit(settings_row_rect(app, i), app->mouse_x, app->mouse_y)) {
                 app->settings_choice = i;
+                if (i >= SETTINGS_VALUE_ROWS) {
+                    toggle = true;
+                }
+            }
+            if (i >= SETTINGS_VALUE_ROWS) {
+                continue;
             }
             if (ui_hit(settings_step_rect(app, i, false), app->mouse_x, app->mouse_y)) {
                 app->settings_choice = i;
@@ -3166,6 +3283,28 @@ static void handle_settings_input(App *app, GLFWwindow *window) {
     }
 
     const int choice = app->settings_choice;
+
+    if (choice >= SETTINGS_VALUE_ROWS) {
+        const int action = choice - SETTINGS_VALUE_ROWS;
+        if (key_pressed(app, GLFW_KEY_BACKSPACE) || key_pressed(app, GLFW_KEY_DELETE)) {
+            BgBindings defaults;
+            bindings_default(&defaults);
+            if (bindings_assign(&app->bindings, action, defaults.keys[action])) {
+                char message[96];
+                snprintf(message, sizeof(message), "%s reset.",
+                         bindings_action_name(action));
+                set_toast(app, message);
+                settings_save(app);
+            } else {
+                set_toast(app, "That key already does something else.");
+            }
+        } else if (toggle) {
+            app->rebind_action = action;
+            set_toast(app, "Press the key you want. ESC cancels.");
+        }
+        return;
+    }
+
     if (choice == 0 && change != 0) {
         app->sensitivity = clampf(app->sensitivity + (float)change * 0.0002f, 0.0006f, 0.008f);
     } else if (choice == 1 && change != 0) {
@@ -3639,7 +3778,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         app->mine_hint_timer -= dt;
     }
 
-    if (key_pressed(app, GLFW_KEY_E) || key_pressed(app, GLFW_KEY_C)) {
+    if (action_pressed(app, BG_ACTION_INVENTORY)) {
         app->show_inventory = true;
         app->craft_choice = 0;
         app->mine_progress = 0.0f;
@@ -3676,7 +3815,7 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         }
     }
 
-    player_update(&app->player, dt, &app->input, &app->world);
+    player_update(&app->player, dt, &app->input, &app->bindings, &app->world);
 
     if (app->input.mouse_held[0]) {
         const int mob_index = mobs_pick(&app->mobs, &app->world, &app->player, 4.0f);
@@ -3783,11 +3922,11 @@ static void update_playing(App *app, float dt, GLFWwindow *window) {
         }
     }
 
-    if (key_pressed(app, GLFW_KEY_Q)) {
+    if (action_pressed(app, BG_ACTION_DROP)) {
         throw_selected(app);
     }
 
-    if (key_pressed(app, GLFW_KEY_F)) {
+    if (action_pressed(app, BG_ACTION_EAT)) {
         if (app->player.health >= 20) {
             set_toast(app, "Not hungry.");
         } else if (inventory_count(app->player.inventory, BG_ITEM_MEAT) > 0) {
@@ -3932,6 +4071,7 @@ int main(void) {
     g_app.active_world = -1;
     g_app.world_delete_confirm = -1;
     g_app.open_chest = -1;
+    g_app.rebind_action = -1;
     g_app.ending_timer = 0.0f;
     g_app.create_dimension = BG_UPPERWORLD;
     snprintf(g_app.name_text, sizeof(g_app.name_text), "My World");

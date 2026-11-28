@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "bindings.h"
+
 #define CHUNK_SIZE 16
 #define CHUNK_VOLUME 4096
 #define UPPERWORLD_TOP 96
@@ -433,7 +435,8 @@ struct BgPlayer {
 
 bool player_near_table(const World *world, const BgPlayer *player);
 void player_init(BgPlayer *player);
-void player_update(BgPlayer *player, float dt, const BgInput *input, const World *world);
+void player_update(BgPlayer *player, float dt, const BgInput *input,
+                   const BgBindings *bindings, const World *world);
 bool player_raycast(const BgPlayer *player, const World *world, float max_dist,
                     int *bx, int *by, int *bz, BlockId *type, int normal[3]);
 bool player_place(BgPlayer *player, World *world, BlockId block, int *px, int *py, int *pz);

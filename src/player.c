@@ -1,7 +1,5 @@
 #include "bg.h"
 
-#include <GLFW/glfw3.h>
-
 #include <math.h>
 
 #define EYE_HEIGHT 1.62f
@@ -60,7 +58,14 @@ void player_init(BgPlayer *player) {
     inventory_add(player->inventory, BG_ITEM_WOOD_PICK, 1);
 }
 
-void player_update(BgPlayer *player, float dt, const BgInput *input, const World *world) {
+/* True while the key the player bound to this action is held. */
+static bool action_down(const BgInput *input, const BgBindings *bindings, BgAction action) {
+    const int key = bindings_key(bindings, action);
+    return key > 0 && key < INPUT_KEY_COUNT && input->keys[key];
+}
+
+void player_update(BgPlayer *player, float dt, const BgInput *input,
+                   const BgBindings *bindings, const World *world) {
     if (dt > 0.05f) {
         dt = 0.05f;
     }
@@ -79,10 +84,10 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
         /* Buoyancy plus drag: sink slowly, swim up with jump, dive with sprint. */
         player->vy -= GRAVITY * 0.16f * dt;
         player->vy *= 1.0f - 3.2f * dt;
-        if (input->keys[GLFW_KEY_SPACE]) {
+        if (action_down(input, bindings, BG_ACTION_JUMP)) {
             player->vy = 4.2f;
             player->on_ground = false;
-        } else if (input->keys[GLFW_KEY_LEFT_SHIFT] && player->vy > -3.2f) {
+        } else if (action_down(input, bindings, BG_ACTION_SPRINT) && player->vy > -3.2f) {
             player->vy = -3.2f;
         }
         if (player->vy < -3.2f) {
@@ -100,10 +105,10 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
 
     float wish_x = 0.0f;
     float wish_z = 0.0f;
-    if (input->keys[GLFW_KEY_W]) { wish_x += forward_x; wish_z += forward_z; }
-    if (input->keys[GLFW_KEY_S]) { wish_x -= forward_x; wish_z -= forward_z; }
-    if (input->keys[GLFW_KEY_D]) { wish_x += right_x; wish_z += right_z; }
-    if (input->keys[GLFW_KEY_A]) { wish_x -= right_x; wish_z -= right_z; }
+    if (action_down(input, bindings, BG_ACTION_FORWARD)) { wish_x += forward_x; wish_z += forward_z; }
+    if (action_down(input, bindings, BG_ACTION_BACK)) { wish_x -= forward_x; wish_z -= forward_z; }
+    if (action_down(input, bindings, BG_ACTION_RIGHT)) { wish_x += right_x; wish_z += right_z; }
+    if (action_down(input, bindings, BG_ACTION_LEFT)) { wish_x -= right_x; wish_z -= right_z; }
 
     const float length = sqrtf(wish_x * wish_x + wish_z * wish_z);
     if (length > 0.0001f) {
@@ -112,12 +117,13 @@ void player_update(BgPlayer *player, float dt, const BgInput *input, const World
     }
 
     const float speed = in_water ? 2.9f
-                                 : (input->keys[GLFW_KEY_LEFT_SHIFT] ? SPRINT_SPEED
-                                                                     : WALK_SPEED);
+                                 : (action_down(input, bindings, BG_ACTION_SPRINT)
+                                        ? SPRINT_SPEED
+                                        : WALK_SPEED);
     player->vx = wish_x * speed;
     player->vz = wish_z * speed;
 
-    if (!in_water && input->keys[GLFW_KEY_SPACE] && player->on_ground) {
+    if (!in_water && action_down(input, bindings, BG_ACTION_JUMP) && player->on_ground) {
         player->vy = JUMP_SPEED;
         player->on_ground = false;
     }
