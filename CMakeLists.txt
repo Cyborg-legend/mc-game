@@ -116,6 +116,10 @@ if(BUILD_TESTING)
     add_executable(check_interp ${BFC_ROOT}/tests/check_interp.c)
     target_include_directories(check_interp PRIVATE ${BFC_ROOT}/src)
     add_test(NAME interpolation COMMAND check_interp)
+
+    add_executable(check_effects ${BFC_ROOT}/tests/check_effects.c)
+    target_include_directories(check_effects PRIVATE ${BFC_ROOT}/src)
+    add_test(NAME effects COMMAND check_effects)
 endif()
 
 # Copy runtime DLLs next to the executable so the build output is runnable.

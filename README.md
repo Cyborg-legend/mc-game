@@ -7,7 +7,9 @@ is synthesised by a tiny waveOut mixer.
 
 Mine, build, craft, and carry the Emberheart through a rift to put down the
 Cinder Alpha, then strike it into a voidstone frame to open the way to
-**Cinderhold** and its Cinder Sovereign.
+**Cinderhold** and its Cinder Sovereign. When the Sovereign roots itself to
+slam the floor, a magma ring fills around the blast radius: the lit arc shows
+how much of its wind-up is left, and the ring marks where the danger ends.
 
 ## Controls
 

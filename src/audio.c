@@ -46,6 +46,7 @@ static void synthesise(BgSound sound, short *out, int samples) {
         case BG_SOUND_CLICK: frequency = 440.0f; noise_mix = 0.0f;  gain = 0.12f; break;
         case BG_SOUND_BOSS:  frequency = 62.0f;  noise_mix = 0.40f; gain = 0.34f; break;
         case BG_SOUND_WIN:   frequency = 330.0f; noise_mix = 0.0f;  gain = 0.26f; break;
+        case BG_SOUND_RUMBLE: frequency = 48.0f; noise_mix = 0.55f; gain = 0.30f; break;
         default: break;
     }
 
@@ -53,7 +54,8 @@ static void synthesise(BgSound sound, short *out, int samples) {
         const float t = (float)i / (float)AUDIO_RATE;
         const float env = envelope(t, duration);
         float sweep = frequency;
-        if (sound == BG_SOUND_RIFT || sound == BG_SOUND_BOSS) {
+        if (sound == BG_SOUND_RIFT || sound == BG_SOUND_BOSS ||
+            sound == BG_SOUND_RUMBLE) {
             sweep = frequency * (1.0f - t * 0.8f);
         } else if (sound == BG_SOUND_PICKUP || sound == BG_SOUND_CRAFT) {
             sweep = frequency * (1.0f + t * 1.6f);

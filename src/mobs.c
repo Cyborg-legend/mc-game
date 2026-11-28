@@ -1,4 +1,5 @@
 #include "bg.h"
+#include "audio.h"
 
 #include <math.h>
 #include <string.h>
@@ -484,6 +485,7 @@ static void update_sovereign(BgMob *mob, const World *world, BgPlayer *player,
             mob->wander_timer = 5.5f;
             if (distance < 13.0f) {
                 mob->windup = 0.8f;
+                audio_play(BG_SOUND_RUMBLE);
             }
         }
         return;

@@ -13,6 +13,7 @@ typedef enum {
     BG_SOUND_CLICK,
     BG_SOUND_BOSS,
     BG_SOUND_WIN,
+    BG_SOUND_RUMBLE,
     BG_SOUND_COUNT
 } BgSound;
 

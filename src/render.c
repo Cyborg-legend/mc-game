@@ -2,6 +2,7 @@
 #include "texture.h"
 #include "shaders.h"
 #include "interp.h"
+#include "effects.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1335,6 +1336,24 @@ void renderer_draw_mobs(BgRenderer *renderer, const BgCamera *camera,
         const float body_half[3] = { half, height * 0.31f, half * 0.78f };
         const float body_center[3] = { mx, my + height * 0.46f, mz };
         mesh_box(mesh, body_center, body_half, skin);
+
+        /* The Sovereign roots itself before a slam. A ring of magma lights up
+         * around the blast radius, filling one segment at a time, so the
+         * player can read both where the danger ends and how long is left. */
+        if (type == MOB_CINDER_SOVEREIGN && mob->windup > 0.0f) {
+            const int segments = bg_charge_segments(mob->windup, 0.8f, 48);
+            const float radius = 13.0f;
+            for (int s = 0; s < segments; ++s) {
+                const float angle = (float)s * (6.2831853f / 48.0f);
+                const float seg_half[3] = { 0.9f, 0.02f, 0.9f };
+                const float seg_center[3] = {
+                    mx + cosf(angle) * radius,
+                    my + 0.05f,
+                    mz + sinf(angle) * radius
+                };
+                mesh_box(mesh, seg_center, seg_half, BG_MAGMA);
+            }
+        }
 
         const float head_half[3] = { half * 0.52f, height * 0.18f, half * 0.52f };
         const float forward = half * 0.78f;
