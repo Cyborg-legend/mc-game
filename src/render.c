@@ -1,4 +1,5 @@
 #include "render.h"
+#include "texture.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -651,6 +652,13 @@ static GLuint build_atlas(void) {
 
     for (int item = 0; item < ITEM_TILE_COUNT; ++item) {
         paint_item_tile(pixels, item);
+    }
+
+    /* Supplied art lives in textures/ and simply paints over the code-made
+     * tiles; a missing folder keeps the painted atlas. */
+    const int overrides = texture_apply_overrides(pixels, ATLAS_WIDTH, ATLAS_HEIGHT, ATLAS_TILE);
+    if (overrides > 0) {
+        fprintf(stderr, "BlockForge: applied %d texture override(s) from textures/\n", overrides);
     }
 
     GLuint texture = 0;

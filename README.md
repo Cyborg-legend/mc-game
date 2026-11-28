@@ -57,6 +57,23 @@ On Windows, GLFW and GLEW are linked statically, so `blockforge.exe` runs on
 its own with no DLLs beside it. Every push to `main` builds the exe and a
 `blockforge-windows.zip` in the GitHub Actions workflow.
 
+## Your own textures
+
+The atlas is painted in code at startup, so the game needs no asset files. To
+replace that art, drop files into a `textures/` folder beside the executable;
+they are loaded over the painted tiles when the atlas is built:
+
+- `textures/atlas.png` (or `.bmp`) at exactly 512x512 (16x16 tiles of 32x32)
+  replaces the whole atlas at once.
+- `textures/tile_NN.png` (or `.bmp`) replaces one tile. `NN` is the tile index
+  in the atlas, two digits: `tile_01` is stone, `tile_02` dirt, `tile_03` grass
+  top, and so on. Any size works; the image is scaled to 32x32.
+
+PNGs may be 8-bit grey, grey+alpha, RGB, RGBA or palette, and must not be
+interlaced. BMPs may be uncompressed 24- or 32-bit. A missing folder, an
+unreadable file or a wrong-sized full atlas is ignored and the painted tile is
+kept. Applied overrides are reported on stderr at startup.
+
 ## Saves
 
 Worlds live in `worlds/` next to the executable:
