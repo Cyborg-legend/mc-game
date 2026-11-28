@@ -1724,6 +1724,20 @@ void renderer_draw_hud(BgRenderer *renderer, const BgPlayer *player) {
                          name_shadow);
         ui_text_centered(&ui, w * 0.5f, bar_y - 56.0f, 1.8f, item_name(held->item),
                          name_color);
+
+        /* Last quarter of a tool's life: say how many blocks are left before
+         * it snaps, so a pick never breaks mid-wall without warning. */
+        const int maximum = item_durability_max(held->item);
+        const int left = maximum - (int)held->damage;
+        if (maximum > 0 && held->damage > 0 && left * 4 <= maximum) {
+            char warn[96];
+            snprintf(warn, sizeof(warn), "%s wearing thin - %d left",
+                     item_name(held->item), left > 0 ? left : 0);
+            const float warn_shadow[4] = { 0.12f, 0.03f, 0.02f, 0.92f };
+            const float warn_color[4] = { 1.0f, 0.44f, 0.24f, 0.98f };
+            ui_text_centered(&ui, w * 0.5f + 1.5f, bar_y - 74.5f, 1.7f, warn, warn_shadow);
+            ui_text_centered(&ui, w * 0.5f, bar_y - 76.0f, 1.7f, warn, warn_color);
+        }
     }
 
     renderer_draw_ui(renderer, &ui);

@@ -2338,6 +2338,61 @@ static void quest_check(App *app) {
     }
 }
 
+/* A hover card: the item's name and, for a tool, the life it has left. */
+static void draw_stack_tooltip(BgUi *ui, float screen_w, float screen_h, float x, float y,
+                               const BgStack *stack) {
+    if (!stack || stack->count == 0) {
+        return;
+    }
+    const int maximum = item_durability_max(stack->item);
+    const char *name = item_name(stack->item);
+    char life[32];
+    life[0] = '\0';
+    if (maximum > 0) {
+        snprintf(life, sizeof(life), "%d / %d", maximum - (int)stack->damage, maximum);
+    }
+    const bool low = maximum > 0 && (int)stack->damage * 4 >= maximum * 3;
+
+    float w = ui_text_width(name, 1.5f) + 20.0f;
+    if (life[0] != '\0') {
+        const float life_w = ui_text_width(life, 1.4f) + 20.0f;
+        if (life_w > w) w = life_w;
+    }
+    if (low) {
+        const float warn_w = ui_text_width("NEARLY BROKEN", 1.3f) + 20.0f;
+        if (warn_w > w) w = warn_w;
+    }
+    const float h = maximum > 0 ? 68.0f : 32.0f;
+
+    if (x + w > screen_w - 6.0f) x = screen_w - w - 6.0f;
+    if (y + h > screen_h - 6.0f) y = screen_h - h - 6.0f;
+    if (x < 6.0f) x = 6.0f;
+    if (y < 6.0f) y = 6.0f;
+
+    const float border[4] = { 0.86f, 0.80f, 0.58f, 0.92f };
+    const float plate[4] = { 0.05f, 0.05f, 0.07f, 0.96f };
+    ui_rect(ui, x, y, w, h, border);
+    ui_rect(ui, x + 1.5f, y + 1.5f, w - 3.0f, h - 3.0f, plate);
+
+    const float text[4] = { 0.94f, 0.94f, 0.90f, 1.0f };
+    ui_text(ui, x + 10.0f, y + 8.0f, 1.5f, name, text);
+    if (maximum <= 0) {
+        return;
+    }
+
+    const float warn[4] = { 1.0f, 0.45f, 0.28f, 1.0f };
+    ui_text(ui, x + 10.0f, y + 26.0f, 1.4f, life, low ? warn : text);
+    const float track[4] = { 0.16f, 0.16f, 0.18f, 1.0f };
+    ui_rect(ui, x + 10.0f, y + 44.0f, w - 20.0f, 4.0f, track);
+    const float left = 1.0f - (float)stack->damage / (float)maximum;
+    const float fill[4] = { clampf(1.4f - left * 1.4f, 0.0f, 1.0f),
+                            clampf(0.5f + left * 0.9f, 0.0f, 1.0f), 0.18f, 1.0f };
+    ui_rect(ui, x + 10.0f, y + 44.0f, (w - 20.0f) * left, 4.0f, fill);
+    if (low) {
+        ui_text(ui, x + 10.0f, y + 52.0f, 1.3f, "NEARLY BROKEN", warn);
+    }
+}
+
 /* The pack and the recipe list share one screen: three rows of slots, hearts
  * under them, then every recipe with its output icon. */
 static void render_inventory(App *app) {
@@ -2476,6 +2531,17 @@ static void render_inventory(App *app) {
             char count[8];
             snprintf(count, sizeof(count), "%u", (unsigned)app->cursor.count);
             ui_text(&ui, app->mouse_x + 2.0f, app->mouse_y - 2.0f, 1.5f, count, text_color);
+        }
+    }
+
+    if (app->cursor.count == 0) {
+        for (int i = 0; i < INVENTORY_SLOTS; ++i) {
+            if (!ui_hit(inventory_slot_rect(app, i), app->mouse_x, app->mouse_y)) {
+                continue;
+            }
+            draw_stack_tooltip(&ui, width, height, app->mouse_x + 16.0f,
+                               app->mouse_y + 12.0f, &app->player.inventory[i]);
+            break;
         }
     }
 
@@ -2780,6 +2846,26 @@ static void render_chest(App *app) {
             ui_text(&ui, app->mouse_x + 2.0f, app->mouse_y - 2.0f, 1.5f, count, text_color);
         }
     }
+
+    if (app->cursor.count == 0) {
+        for (int i = 0; i < CHEST_SLOTS; ++i) {
+            if (!ui_hit(chest_slot_rect(app, i), app->mouse_x, app->mouse_y)) {
+                continue;
+            }
+            draw_stack_tooltip(&ui, width, height, app->mouse_x + 16.0f,
+                               app->mouse_y + 12.0f, &container->slots[i]);
+            break;
+        }
+        for (int i = 0; i < HOTBAR_SLOTS; ++i) {
+            if (!ui_hit(chest_player_slot_rect(app, i), app->mouse_x, app->mouse_y)) {
+                continue;
+            }
+            draw_stack_tooltip(&ui, width, height, app->mouse_x + 16.0f,
+                               app->mouse_y + 12.0f, &app->player.inventory[i]);
+            break;
+        }
+    }
+
     renderer_draw_ui(&app->renderer, &ui);
     ui_free(&ui);
 }
