@@ -156,58 +156,76 @@ endif()
 # -DBUILD_TESTING=ON (the default) and run them with ctest.
 include(CTest)
 if(BUILD_TESTING)
+    # libm is a separate library only on Unix. Windows gets the math functions
+    # from the CRT, and asking for "m" there makes the linker look for m.lib,
+    # which does not exist (LNK1181). So the checks share one list that is
+    # empty on Windows and "m" everywhere else.
+    set(BFC_CHECK_LIBS "")
+    if(NOT WIN32)
+        set(BFC_CHECK_LIBS m)
+    endif()
+
+    # Every check is plain C that needs no window, GPU or game state, so they
+    # share the same include path and math library setup.
+    function(bfc_check name)
+        target_include_directories(${name} PRIVATE ${BFC_ROOT}/src)
+        if(BFC_CHECK_LIBS)
+            target_link_libraries(${name} PRIVATE ${BFC_CHECK_LIBS})
+        endif()
+    endfunction()
+
     add_executable(check_shader_variation
         ${BFC_ROOT}/tests/check_shader_variation.c
         ${BFC_ROOT}/src/shaders.c
     )
-    target_include_directories(check_shader_variation PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_shader_variation)
     add_test(NAME shader_variation COMMAND check_shader_variation)
 
     add_executable(check_timestep
         ${BFC_ROOT}/tests/check_timestep.c
         ${BFC_ROOT}/src/timestep.c
     )
-    target_include_directories(check_timestep PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_timestep)
     add_test(NAME timestep COMMAND check_timestep)
 
     add_executable(check_interp ${BFC_ROOT}/tests/check_interp.c)
-    target_include_directories(check_interp PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_interp)
     add_test(NAME interpolation COMMAND check_interp)
 
     add_executable(check_effects ${BFC_ROOT}/tests/check_effects.c)
-    target_include_directories(check_effects PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_effects)
     add_test(NAME effects COMMAND check_effects)
 
     add_executable(check_framecap
         ${BFC_ROOT}/tests/check_framecap.c
         ${BFC_ROOT}/src/framecap.c
     )
-    target_include_directories(check_framecap PRIVATE ${BFC_ROOT}/src)
-    target_link_libraries(check_framecap PRIVATE m)
+    bfc_check(check_framecap)
     add_test(NAME framecap COMMAND check_framecap)
 
     add_executable(check_worldmeta
         ${BFC_ROOT}/tests/check_worldmeta.c
         ${BFC_ROOT}/src/worldmeta.c
     )
-    target_include_directories(check_worldmeta PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_worldmeta)
     add_test(NAME worldmeta COMMAND check_worldmeta)
 
     add_executable(check_gltrace
         ${BFC_ROOT}/tests/check_gltrace.c
         ${BFC_ROOT}/src/gltrace.c
     )
-    target_include_directories(check_gltrace PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_gltrace)
     add_test(NAME gltrace COMMAND check_gltrace)
 
     add_executable(check_loot
         ${BFC_ROOT}/tests/check_loot.c
         ${BFC_ROOT}/src/loot.c
     )
-    target_include_directories(check_loot PRIVATE ${BFC_ROOT}/src)
+    bfc_check(check_loot)
     add_test(NAME loot COMMAND check_loot)
 
     add_executable(check_chunkqueue ${BFC_ROOT}/tests/check_chunkqueue.c)
+    bfc_check(check_chunkqueue)
     target_link_libraries(check_chunkqueue PRIVATE blockforge_chunkqueue)
     add_test(NAME chunkqueue COMMAND check_chunkqueue)
 
@@ -217,7 +235,7 @@ if(BUILD_TESTING)
             ${BFC_ROOT}/tests/check_chunkworker.c
             ${BFC_ROOT}/src/chunkworker.c
         )
-        target_include_directories(check_chunkworker PRIVATE ${BFC_ROOT}/src)
+        bfc_check(check_chunkworker)
         target_compile_definitions(check_chunkworker PRIVATE BG_ASYNC_CHUNKS)
         target_link_libraries(check_chunkworker PRIVATE Threads::Threads blockforge_chunkqueue)
         add_test(NAME chunkworker COMMAND check_chunkworker)
