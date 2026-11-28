@@ -533,6 +533,16 @@ static UiRect inventory_panel_rect(const App *app) {
     return r;
 }
 
+static UiRect inventory_sort_rect(const App *app) {
+    const UiRect panel = inventory_panel_rect(app);
+    UiRect r;
+    r.w = 116.0f;
+    r.h = 28.0f;
+    r.x = panel.x + panel.w - r.w - 16.0f;
+    r.y = panel.y + 13.0f;
+    return r;
+}
+
 static UiRect inventory_slot_rect(const App *app, int index) {
     const float slot = 46.0f;
     const float gap = 6.0f;
@@ -2529,6 +2539,8 @@ static void render_inventory(App *app) {
     ui_text_centered(&ui, width * 0.5f, panel.y + 46.0f, 1.5f,
                      near_table ? "CRAFTING TABLE IN REACH" : "NO TABLE: BASIC RECIPES ONLY",
                      near_table ? title : muted);
+    const UiRect sort = inventory_sort_rect(app);
+    draw_button(&ui, sort.x, sort.y, sort.w, sort.h, 1.5f, "SORT (T)", false, true);
 
     for (int i = 0; i < INVENTORY_SLOTS; ++i) {
         const UiRect r = inventory_slot_rect(app, i);
@@ -2809,6 +2821,14 @@ static void handle_inventory_input(App *app, GLFWwindow *window) {
         stash_cursor(app);
         app->show_inventory = false;
         set_cursor_captured(window, true);
+        return;
+    }
+
+    if (key_pressed(app, GLFW_KEY_T) ||
+        (app->input.mouse[0] && ui_hit(inventory_sort_rect(app), app->mouse_x, app->mouse_y))) {
+        inventory_sort(app->player.inventory, INVENTORY_SLOTS);
+        audio_play(BG_SOUND_CLICK);
+        set_toast(app, "Pack sorted.");
         return;
     }
 
