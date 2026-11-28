@@ -14,12 +14,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake gcc libglfw3-dev libglew-dev libgl1-mesa-dev
+          # pkg-config lets CMake find GLFW even on releases whose libglfw3-dev
+          # has no glfw3Config.cmake.
+          sudo apt-get install -y cmake gcc pkg-config libglfw3-dev libglew-dev libgl1-mesa-dev
 
       # The headless checks live in tests/ and need no GPU; this also proves
       # the game configures and builds with the real Linux GL packages.
       - name: Configure
-        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 
       - name: Build
         run: cmake --build build --parallel

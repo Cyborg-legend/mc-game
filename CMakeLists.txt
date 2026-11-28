@@ -31,19 +31,59 @@ target_include_directories(blockforge PRIVATE
 )
 
 # ---- GLFW ----
+# Three sources, in order: the CMake config (the Windows CI download, or a
+# distro package such as Ubuntu's libglfw3-dev), pkg-config (older distros
+# shipped only a .pc file), then a plain header+library search. Any of them
+# is enough, so the checks job does not hinge on one packaging choice.
 if(NOT glfw3_DIR AND EXISTS "${DEPS_ROOT}/glfw_deps/glfw3Config.cmake")
     set(glfw3_DIR "${DEPS_ROOT}/glfw_deps")
 endif()
 find_package(glfw3 CONFIG QUIET)
-if(TARGET glfw)
-    set(BFC_GLFW_TARGET glfw)
-elseif(TARGET glfw3)
-    set(BFC_GLFW_TARGET glfw3)
-elseif(DEFINED glfw3_LIBRARIES)
-    target_include_directories(blockforge PRIVATE ${glfw3_INCLUDE_DIRS})
+
+set(BFC_GLFW_TARGET "")
+set(BFC_GLFW_LIBS "")
+set(BFC_GLFW_INCLUDES "")
+
+# Package configs across versions export different target names.
+foreach(candidate glfw glfw3 glfw3::glfw GLFW::GLFW)
+    if(NOT BFC_GLFW_TARGET AND TARGET ${candidate})
+        set(BFC_GLFW_TARGET ${candidate})
+    endif()
+endforeach()
+
+# Some configs (including the generated one in CI) only set variables.
+if(NOT BFC_GLFW_TARGET AND DEFINED glfw3_LIBRARIES)
     set(BFC_GLFW_LIBS ${glfw3_LIBRARIES})
-else()
-    message(FATAL_ERROR "GLFW not found. Set CMAKE_PREFIX_PATH to the directory containing glfw3Config.cmake")
+    set(BFC_GLFW_INCLUDES ${glfw3_INCLUDE_DIRS})
+endif()
+
+if(NOT BFC_GLFW_TARGET AND NOT BFC_GLFW_LIBS)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(BFC_GLFW_PC QUIET IMPORTED_TARGET glfw3)
+        if(BFC_GLFW_PC_FOUND)
+            set(BFC_GLFW_TARGET PkgConfig::BFC_GLFW_PC)
+        endif()
+    endif()
+endif()
+
+if(NOT BFC_GLFW_TARGET AND NOT BFC_GLFW_LIBS)
+    find_path(BFC_GLFW_INCLUDE_DIR GLFW/glfw3.h)
+    find_library(BFC_GLFW_LIBRARY NAMES glfw glfw3)
+    if(BFC_GLFW_INCLUDE_DIR AND BFC_GLFW_LIBRARY)
+        set(BFC_GLFW_LIBS ${BFC_GLFW_LIBRARY})
+        set(BFC_GLFW_INCLUDES ${BFC_GLFW_INCLUDE_DIR})
+    endif()
+endif()
+
+if(NOT BFC_GLFW_TARGET AND NOT BFC_GLFW_LIBS)
+    message(FATAL_ERROR
+        "GLFW not found. Install libglfw3-dev (Debian/Ubuntu) or set "
+        "CMAKE_PREFIX_PATH to the directory containing glfw3Config.cmake")
+endif()
+
+if(BFC_GLFW_INCLUDES)
+    target_include_directories(blockforge PRIVATE ${BFC_GLFW_INCLUDES})
 endif()
 
 # ---- GLEW ----
